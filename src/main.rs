@@ -287,12 +287,17 @@ fn crack_task(worker_id: u32, worker_total: u32, keys_total: u64) {
     println!("[worker {}] checked {} keys (done)", worker_id, keys_checked);
 }
 
-fn crack() {
+fn crack(parallel: bool) {
     let mut keys_total: u64 = 0;
     preamble(&mut keys_total);
 
-    let worker_total = std::thread::available_parallelism().unwrap_or(unsafe { std::num::NonZero::new_unchecked(1) }).get() as u32;
-    println!("Spawning {} workers", worker_total);
+    let worker_total = if parallel {
+        std::thread::available_parallelism().unwrap_or(unsafe { std::num::NonZero::new_unchecked(1) }).get() as u32
+    } else {
+        1u32
+    };
+
+    println!("Using {} workers", worker_total);
     let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
     for worker_id in 1..worker_total {
@@ -312,8 +317,9 @@ fn crack() {
 
 fn print_help() {
     println!("Arguments:");
-    println!("--help, -h : Prints this help screen");
-    println!("--codegen : Generates message list declaration code");
+    println!("--help, -h   : Prints this help screen");
+    println!("--codegen    : Generates message list declaration code");
+    println!("--sequential : Disable parallelism (single-threaded cracking)");
 }
 
 fn main() {
@@ -325,13 +331,15 @@ fn main() {
         print_help();
         std::process::exit(1);
     } else if args.len() == 0 {
-        crack();
+        crack(true);
     } else {
         let arg0 = &args[0];
         if arg0 == "--help" || arg0 == "-h" {
             print_help();
         } else if arg0 == "--codegen" {
             codegen::gen_message_structs(0);
+        } else if arg0 == "--sequential" {
+            crack(false);
         } else {
             eprintln!("Invalid argument \"{}\"", arg0);
             print_help();
