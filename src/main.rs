@@ -1,12 +1,10 @@
 use std::time::Instant;
-
 use colored::Colorize;
+use messages::{Message, MessageList, MESSAGES};
 
 mod codegen;
 mod utils;
 mod messages;
-
-use messages::{Message, MessageList, MESSAGES};
 
 const RAX_ORDER: i32 = 0; // RAX, ARX, XRA, RXA, AXR, XAR
 const ROUND_COUNT: usize = 2;
@@ -45,23 +43,38 @@ macro_rules! permute_round_parameter {
     }
 }
 
-macro_rules! permute_round {
+macro_rules! _permute_round {
     ($round:expr, $callback:block) => {
-        permute_round_parameter!($round.xor, 255, {
-            permute_round_parameter!($round.add, 255, {
-                permute_round_parameter!($round.rotate, 7, {
-                    $callback
-                });
+        permute_round_parameter!($round.add, 255, {
+            permute_round_parameter!($round.rotate, 7, {
+                $callback
             });
         });
     };
 }
 
+macro_rules! permute_round {
+    ($worker_id:expr, $worker_total:expr, $worker_keys_total:expr, $round:expr, $callback:block) => {
+        let x_min = (($worker_id * 256) / $worker_total) as i32;
+        let x_max = ((($worker_id + 1) * 256) / $worker_total) as i32;
+        $worker_keys_total = ($worker_keys_total as f64 * ((x_max - x_min) as f64 / 256f64)) as u64;
+        for x in x_min..x_max {
+            $round.xor = x;
+            _permute_round!($round, $callback);
+        }
+    };
+    ($round:expr, $callback:block) => {
+        permute_round_parameter!($round.xor, 255, {
+            _permute_round!($round, $callback);
+        });
+    };
+}
+
 macro_rules! permute_key {
-    ($key:expr, $callback:block) => {
+    ($worker_id:expr, $worker_total:expr, $worker_keys_total:expr, $key:expr, $callback:block) => {
         // TODO it would be nice if this code could be generated, but i couldn't
         //      figure out how to do recursive macros
-        permute_round!($key.rounds[0], {
+        permute_round!($worker_id, $worker_total, $worker_keys_total, $key.rounds[0], {
             permute_round!($key.rounds[1], {
                 $callback
             });
@@ -222,7 +235,8 @@ fn try_key(key: &Key, working_messages: &mut MessageList) {
     print_key_match(key, &working_messages);
 }
 
-fn preamble(working_messages: &mut MessageList, keys_total: &mut u64) {
+fn preamble(keys_total: &mut u64) {
+    let mut working_messages: MessageList = MESSAGES;
     let mut key = Key::default();
     permute_round!(key.rounds[0], {
         *keys_total += 1;
@@ -231,7 +245,7 @@ fn preamble(working_messages: &mut MessageList, keys_total: &mut u64) {
 
     println!("Checking {} RAX rounds ({} total permutations). Ciphertexts (mod_add 32):", ROUND_COUNT, *keys_total);
 
-    for msg in working_messages {
+    for msg in &mut working_messages {
         for i in 0..msg.data_len {
             msg.data[i] = utils::mod_add(msg.data[i], 32);
         }
@@ -242,18 +256,15 @@ fn preamble(working_messages: &mut MessageList, keys_total: &mut u64) {
     println!();
 }
 
-fn crack() {
+fn crack_task(worker_id: u32, worker_total: u32, keys_total: u64) {
     let mut working_messages: MessageList = MESSAGES;
-    let mut keys_total: u64 = 0;
-
-    preamble(&mut working_messages, &mut keys_total);
-
     let mut key = Key::default();
     let mut keys_checked: u64 = 0;
     let mut last_print = Instant::now();
     let mut kps_accum_skips = 0;
+    let mut worker_keys_total = keys_total;
 
-    permute_key!(key, {
+    permute_key!(worker_id, worker_total, worker_keys_total, key, {
         try_key(&key, &mut working_messages);
 
         keys_checked += 1;
@@ -264,8 +275,7 @@ fn crack() {
             let now = Instant::now();
             let secs_since_last = now.duration_since(last_print).as_secs_f64();
             if secs_since_last >= 1f64 {
-                println!("{:.2}% checked ({}/{} keys, {} keys/sec)", (keys_checked as f64 / keys_total as f64) * 100f64, utils::format_big_num(keys_checked as f64), utils::format_big_num(keys_total as f64), utils::format_big_num((KPS_PRINT_MASK * (kps_accum_skips + 1)) as f64 / secs_since_last));
-                println!("- last key checked: {:?}", key);
+                println!("[worker {}] {:.2}% checked ({}/{} keys, {} keys/sec). last key: {:?}", worker_id, (keys_checked as f64 / worker_keys_total as f64) * 100f64, utils::format_big_num(keys_checked as f64), utils::format_big_num(worker_keys_total as f64), utils::format_big_num((KPS_PRINT_MASK * (kps_accum_skips + 1)) as f64 / secs_since_last), key);
                 last_print = now;
                 kps_accum_skips = 0;
             } else {
@@ -274,7 +284,30 @@ fn crack() {
         }
     });
 
-    println!("checked {} keys (done)", keys_checked);
+    println!("[worker {}] checked {} keys (done)", worker_id, keys_checked);
+}
+
+fn crack() {
+    let mut keys_total: u64 = 0;
+    preamble(&mut keys_total);
+
+    let worker_total = std::thread::available_parallelism().unwrap_or(unsafe { std::num::NonZero::new_unchecked(1) }).get() as u32;
+    println!("Spawning {} workers", worker_total);
+    let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
+
+    for worker_id in 1..worker_total {
+        handles.push(std::thread::spawn(move || {
+            crack_task(worker_id, worker_total, keys_total);
+        }));
+    }
+
+    crack_task(0, worker_total, keys_total);
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    println!("All workers done");
 }
 
 fn print_help() {
