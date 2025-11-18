@@ -87,7 +87,7 @@ fn print_binary_single(c: u8) {
 }
 
 fn print_message(msg: &Message, config: MessagePrintConfig) {
-    print!("{}", format!("message {}, len {: >3}: ", msg.name, msg.data_len).bright_black());
+    print!("{}", format!("{}, len {: >3}: ", msg.name, msg.data_len).bright_black());
 
     let mut left = if config.max_len == 0 { u32::MAX } else { config.max_len };
     let mut first = true;
@@ -299,6 +299,10 @@ fn main() {
             print_help();
         } else if arg0 == "--codegen" {
             codegen::gen_message_structs(0);
+        } else {
+            eprintln!("Invalid argument \"{}\"", arg0);
+            print_help();
+            std::process::exit(1);
         }
     }
 }

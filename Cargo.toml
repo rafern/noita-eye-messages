@@ -5,3 +5,7 @@ edition = "2024"
 
 [dependencies]
 colored = "3.0.0"
+
+[profile.release]
+# for some reason thin lto has better performance on my machine
+lto = "thin"
