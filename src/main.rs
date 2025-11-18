@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::time::Instant;
 
 use colored::Colorize;
@@ -10,6 +8,7 @@ mod messages;
 
 use messages::{Message, MessageList, MESSAGES};
 
+const RAX_ORDER: i32 = 0; // RAX, ARX, XRA, RXA, AXR, XAR
 const ROUND_COUNT: usize = 2;
 const KPS_PRINT_MASK: u64 = 0xffffff;
 
@@ -23,8 +22,6 @@ struct RAXRound {
     add: i32,
     /** range: 0-255 */
     xor: i32,
-    /** range: 0-5 */
-    order: i32, // RAX, ARX, XRA, RXA, AXR, XAR
 }
 
 #[derive(Debug)]
@@ -53,9 +50,7 @@ macro_rules! permute_round {
         permute_round_parameter!($round.xor, 255, {
             permute_round_parameter!($round.add, 255, {
                 permute_round_parameter!($round.rotate, 7, {
-                    // permute_round_parameter!($round.order, 5, {
-                        $callback
-                    // });
+                    $callback
                 });
             });
         });
@@ -142,40 +137,39 @@ fn print_message(msg: &Message, config: MessagePrintConfig) {
 }
 
 fn apply_rax_round(in_byte: u8, round: &RAXRound) -> u8 {
-    // RAX, ARX, XRA, RXA, AXR, XAR
     let mut byte: u8 = in_byte;
-    // match round.order {
-    //     0 => {
+    match RAX_ORDER {
+        0 => {
             byte = utils::rotate(byte, round.rotate as i32);
             byte = utils::mod_add(byte, round.add as i32);
             byte ^ round.xor as u8
-    //     },
-    //     1 => {
-    //         byte = utils::mod_add(byte, round.add as i32);
-    //         byte = utils::rotate(byte, round.rotate as i32);
-    //         byte ^ round.xor as u8
-    //     },
-    //     2 => {
-    //         byte ^= round.xor as u8;
-    //         byte = utils::rotate(byte, round.rotate as i32);
-    //         utils::mod_add(byte, round.add as i32)
-    //     },
-    //     3 => {
-    //         byte = utils::rotate(byte, round.rotate as i32);
-    //         byte ^= round.xor as u8;
-    //         utils::mod_add(byte, round.add as i32)
-    //     },
-    //     4 => {
-    //         byte = utils::mod_add(byte, round.add as i32);
-    //         byte ^= round.xor as u8;
-    //         utils::rotate(byte, round.rotate as i32)
-    //     },
-    //     _ => {
-    //         byte ^= round.xor as u8;
-    //         byte = utils::mod_add(byte, round.add as i32);
-    //         utils::rotate(byte, round.rotate as i32)
-    //     }
-    // }
+        },
+        1 => {
+            byte = utils::mod_add(byte, round.add as i32);
+            byte = utils::rotate(byte, round.rotate as i32);
+            byte ^ round.xor as u8
+        },
+        2 => {
+            byte ^= round.xor as u8;
+            byte = utils::rotate(byte, round.rotate as i32);
+            utils::mod_add(byte, round.add as i32)
+        },
+        3 => {
+            byte = utils::rotate(byte, round.rotate as i32);
+            byte ^= round.xor as u8;
+            utils::mod_add(byte, round.add as i32)
+        },
+        4 => {
+            byte = utils::mod_add(byte, round.add as i32);
+            byte ^= round.xor as u8;
+            utils::rotate(byte, round.rotate as i32)
+        },
+        _ => {
+            byte ^= round.xor as u8;
+            byte = utils::mod_add(byte, round.add as i32);
+            utils::rotate(byte, round.rotate as i32)
+        }
+    }
 }
 
 fn decrypt(ct_msg: &Message, pt_msg: &mut Message, key: &Key) {
@@ -263,11 +257,15 @@ fn crack() {
         try_key(&key, &mut working_messages);
 
         keys_checked += 1;
+        // XXX this makes the last round *look* like it's not changing in the
+        //     "last key checked" log, but it actually is. don't remove this
+        //     check though, otherwise it dramatically slows everything down
         if keys_checked & KPS_PRINT_MASK == 0 {
             let now = Instant::now();
             let secs_since_last = now.duration_since(last_print).as_secs_f64();
             if secs_since_last >= 1f64 {
                 println!("{:.2}% checked ({}/{} keys, {} keys/sec)", (keys_checked as f64 / keys_total as f64) * 100f64, utils::format_big_num(keys_checked as f64), utils::format_big_num(keys_total as f64), utils::format_big_num((KPS_PRINT_MASK * (kps_accum_skips + 1)) as f64 / secs_since_last));
+                println!("- last key checked: {:?}", key);
                 last_print = now;
                 kps_accum_skips = 0;
             } else {
