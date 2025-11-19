@@ -30,7 +30,7 @@ fn sub32_message(msg: &[u8]) -> Vec<u8> {
     let mut m_out: Vec<u8> = Vec::new();
 
     for c in msg {
-        m_out.push(utils::mod_add(*c, -32));
+        m_out.push(c.wrapping_add_signed(-32));
     }
 
     m_out

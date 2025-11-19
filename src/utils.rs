@@ -1,17 +1,3 @@
-pub fn mod_add(c: u8, amount: i32) -> u8 {
-    ((c as i32 + amount).rem_euclid(256)) as u8
-}
-
-pub fn rotate(c: u8, amount: i32) -> u8 {
-    // +ive = right rot, -ive = left rot. left rot % 8 = right rot
-    let r = amount.rem_euclid(8);
-    if r > 0 {
-        ((c & !(0xffu8 << r)) << (8 - r)) | (c >> r)
-    } else {
-        c
-    }
-}
-
 pub const fn char_num(c: char) -> u8 {
     (c as u32) as u8
 }

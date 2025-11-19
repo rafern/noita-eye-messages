@@ -6,20 +6,19 @@ mod codegen;
 mod utils;
 mod messages;
 
-const RAX_ORDER: i32 = 0; // RAX, ARX, XRA, RXA, AXR, XAR
+const RAX_ORDER: i32 = 1; // RAX, ARX, XRA, RXA, AXR, XAR
 const ROUND_COUNT: usize = 2;
 const KPS_PRINT_MASK: u64 = 0xffffff;
 
 #[derive(Debug)]
 #[derive(Default)]
-/** Note that members are i32 instead of u8 for performance reasons */
 struct RAXRound {
-    /** range: 0-7 */
-    rotate: i32,
+    /** range: 0-7. u32 instead of u8 for performance reasons */
+    rotate: u32,
     /** range: 0-255 */
-    add: i32,
+    add: u8,
     /** range: 0-255 */
-    xor: i32,
+    xor: u8,
 }
 
 #[derive(Debug)]
@@ -58,7 +57,7 @@ macro_rules! permute_round {
         let x_min = (($worker_id * 256) / $worker_total) as i32;
         let x_max = ((($worker_id + 1) * 256) / $worker_total) as i32;
         $worker_keys_total = ($worker_keys_total as f64 * ((x_max - x_min) as f64 / 256f64)) as u64;
-        for x in x_min..x_max {
+        for x in x_min as u8..=(x_max - 1) as u8 {
             $round.xor = x;
             _permute_round!($round, $callback);
         }
@@ -153,34 +152,34 @@ fn apply_rax_round(in_byte: u8, round: &RAXRound) -> u8 {
     let mut byte: u8 = in_byte;
     match RAX_ORDER {
         0 => {
-            byte = utils::rotate(byte, round.rotate as i32);
-            byte = utils::mod_add(byte, round.add as i32);
-            byte ^ round.xor as u8
+            byte = byte.rotate_right(round.rotate);
+            byte = byte.wrapping_add(round.add);
+            byte ^ round.xor
         },
         1 => {
-            byte = utils::mod_add(byte, round.add as i32);
-            byte = utils::rotate(byte, round.rotate as i32);
-            byte ^ round.xor as u8
+            byte = byte.wrapping_add(round.add);
+            byte = byte.rotate_right(round.rotate);
+            byte ^ round.xor
         },
         2 => {
-            byte ^= round.xor as u8;
-            byte = utils::rotate(byte, round.rotate as i32);
-            utils::mod_add(byte, round.add as i32)
+            byte ^= round.xor;
+            byte = byte.rotate_right(round.rotate);
+            byte.wrapping_add(round.add)
         },
         3 => {
-            byte = utils::rotate(byte, round.rotate as i32);
-            byte ^= round.xor as u8;
-            utils::mod_add(byte, round.add as i32)
+            byte = byte.rotate_right(round.rotate);
+            byte ^= round.xor;
+            byte.wrapping_add(round.add)
         },
         4 => {
-            byte = utils::mod_add(byte, round.add as i32);
-            byte ^= round.xor as u8;
-            utils::rotate(byte, round.rotate as i32)
+            byte = byte.wrapping_add(round.add);
+            byte ^= round.xor;
+            byte.rotate_right(round.rotate)
         },
         _ => {
-            byte ^= round.xor as u8;
-            byte = utils::mod_add(byte, round.add as i32);
-            utils::rotate(byte, round.rotate as i32)
+            byte ^= round.xor;
+            byte = byte.wrapping_add(round.add);
+            byte.rotate_right(round.rotate)
         }
     }
 }
@@ -219,6 +218,7 @@ fn try_key(key: &Key, working_messages: &mut MessageList) {
     // if pt_msg_0.data[2] != utils::char_num(' ') { return }
 
     let pt_msg_0_0 = pt_msg_0.data[0];
+    // if !utils::is_alphanum(pt_msg_0_0) { return }
     if !utils::is_ord(pt_msg_0_0) { return }
 
     // other messages
@@ -227,6 +227,9 @@ fn try_key(key: &Key, working_messages: &mut MessageList) {
         decrypt(&MESSAGES[m], pt_msg, key);
 
         let pt_msg_m_0 = pt_msg.data[0];
+        // if utils::is_alpha(pt_msg_m_0) != utils::is_alpha(pt_msg_0_0) { return }
+        // if utils::is_upper_alpha(pt_msg_m_0) != utils::is_upper_alpha(pt_msg_0_0) { return }
+        // if utils::is_lower_alpha(pt_msg_m_0) != utils::is_lower_alpha(pt_msg_0_0) { return }
         if utils::is_upper_atoi(pt_msg_m_0) != utils::is_upper_atoi(pt_msg_0_0) { return }
         if utils::is_lower_atoi(pt_msg_m_0) != utils::is_lower_atoi(pt_msg_0_0) { return }
         if utils::is_num(pt_msg_m_0) != utils::is_num(pt_msg_0_0) { return }
@@ -247,7 +250,7 @@ fn preamble(keys_total: &mut u64) {
 
     for msg in &mut working_messages {
         for i in 0..msg.data_len {
-            msg.data[i] = utils::mod_add(msg.data[i], 32);
+            msg.data[i] = msg.data[i] + 32;
         }
 
         print_message(msg, MessagePrintConfig::default());
@@ -292,7 +295,7 @@ fn crack(parallel: bool) {
     preamble(&mut keys_total);
 
     let worker_total = if parallel {
-        std::thread::available_parallelism().unwrap_or(unsafe { std::num::NonZero::new_unchecked(1) }).get() as u32
+        (std::thread::available_parallelism().unwrap_or(unsafe { std::num::NonZero::new_unchecked(1) }).get() as u32).min(256)
     } else {
         1u32
     };
