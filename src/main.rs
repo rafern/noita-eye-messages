@@ -1,4 +1,5 @@
 use std::time::Instant;
+use std::sync::{Arc, Mutex};
 use colored::Colorize;
 use messages::{Message, MessageList, MESSAGES};
 
@@ -78,6 +79,13 @@ macro_rules! permute_key {
                 $callback
             });
         });
+    };
+}
+
+macro_rules! critical_section {
+    ($log_mutex:expr, $callback:block) => {
+        let _guard = $log_mutex.lock().unwrap();
+        $callback
     };
 }
 
@@ -208,7 +216,7 @@ fn print_key_match(key: &Key, working_messages: &MessageList) {
     }
 }
 
-fn try_key(key: &Key, working_messages: &mut MessageList) {
+fn try_key(key: &Key, working_messages: &mut MessageList, log_mutex: &Arc<Mutex<()>>) {
     // first message special case. put conditions for repeated sections here
     let pt_msg_0 = &mut working_messages[0];
     decrypt(&MESSAGES[0], pt_msg_0, key);
@@ -235,7 +243,9 @@ fn try_key(key: &Key, working_messages: &mut MessageList) {
         if utils::is_num(pt_msg_m_0) != utils::is_num(pt_msg_0_0) { return }
     }
 
-    print_key_match(key, &working_messages);
+    critical_section!(log_mutex, {
+        print_key_match(key, &working_messages);
+    });
 }
 
 fn preamble(keys_total: &mut u64) {
@@ -259,7 +269,7 @@ fn preamble(keys_total: &mut u64) {
     println!();
 }
 
-fn crack_task(worker_id: u32, worker_total: u32, keys_total: u64) {
+fn crack_task(worker_id: u32, worker_total: u32, keys_total: u64, log_mutex: Arc<Mutex<()>>) {
     let mut working_messages: MessageList = MESSAGES;
     let mut key = Key::default();
     let mut keys_checked: u64 = 0;
@@ -268,7 +278,7 @@ fn crack_task(worker_id: u32, worker_total: u32, keys_total: u64) {
     let mut worker_keys_total = keys_total;
 
     permute_key!(worker_id, worker_total, worker_keys_total, key, {
-        try_key(&key, &mut working_messages);
+        try_key(&key, &mut working_messages, &log_mutex);
 
         keys_checked += 1;
         // XXX this makes the last round *look* like it's not changing in the
@@ -278,7 +288,9 @@ fn crack_task(worker_id: u32, worker_total: u32, keys_total: u64) {
             let now = Instant::now();
             let secs_since_last = now.duration_since(last_print).as_secs_f64();
             if secs_since_last >= 1f64 {
-                println!("[worker {}] {:.2}% checked ({}/{} keys, {} keys/sec). last key: {:?}", worker_id, (keys_checked as f64 / worker_keys_total as f64) * 100f64, utils::format_big_num(keys_checked as f64), utils::format_big_num(worker_keys_total as f64), utils::format_big_num((KPS_PRINT_MASK * (kps_accum_skips + 1)) as f64 / secs_since_last), key);
+                critical_section!(log_mutex, {
+                    println!("[worker {}] {:.2}% checked ({}/{} keys, {} keys/sec). last key: {:?}", worker_id, (keys_checked as f64 / worker_keys_total as f64) * 100f64, utils::format_big_num(keys_checked as f64), utils::format_big_num(worker_keys_total as f64), utils::format_big_num((KPS_PRINT_MASK * (kps_accum_skips + 1)) as f64 / secs_since_last), key);
+                });
                 last_print = now;
                 kps_accum_skips = 0;
             } else {
@@ -287,7 +299,9 @@ fn crack_task(worker_id: u32, worker_total: u32, keys_total: u64) {
         }
     });
 
-    println!("[worker {}] checked {} keys (done)", worker_id, keys_checked);
+    critical_section!(log_mutex, {
+        println!("[worker {}] checked {} keys (done)", worker_id, keys_checked);
+    });
 }
 
 fn crack(parallel: bool) {
@@ -301,15 +315,17 @@ fn crack(parallel: bool) {
     };
 
     println!("Using {} workers", worker_total);
+    let log_mutex: Arc<Mutex<()>> = Arc::new(Mutex::new(())); // FIXME why don't semaphores exist?
     let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
     for worker_id in 1..worker_total {
+        let log_mutex = Arc::clone(&log_mutex);
         handles.push(std::thread::spawn(move || {
-            crack_task(worker_id, worker_total, keys_total);
+            crack_task(worker_id, worker_total, keys_total, log_mutex);
         }));
     }
 
-    crack_task(0, worker_total, keys_total);
+    crack_task(0, worker_total, keys_total, log_mutex);
 
     for handle in handles {
         handle.join().unwrap();
