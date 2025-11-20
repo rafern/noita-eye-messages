@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use crate::critical_section;
+use crate::utils::threading::Semaphore;
 use crate::utils::message::{Message, MessageList};
 use crate::utils::print::{print_message, format_big_num, MessagePrintConfig};
 use crate::utils::compare::{char_num, is_alphanum, is_ord, is_alpha, is_upper_alpha, is_lower_alpha, is_upper_atoi, is_lower_atoi, is_num};
@@ -123,7 +123,7 @@ fn decrypt(ct_msg: &Message, pt_msg: &mut Message, key: &Key) {
     }
 }
 
-fn try_key(key: &Key, working_messages: &mut MessageList, messages: &MessageList, log_mutex: &Arc<Mutex<()>>) {
+fn try_key(key: &Key, working_messages: &mut MessageList, messages: &MessageList, log_semaphore: &Semaphore) {
     // first message special case. put conditions for repeated sections here
     let pt_msg_0 = &mut working_messages[0];
     decrypt(&messages[0], pt_msg_0, key);
@@ -149,7 +149,7 @@ fn try_key(key: &Key, working_messages: &mut MessageList, messages: &MessageList
         if is_num(pt_msg_m_0) != is_num(pt_msg_0_0) { return }
     }
 
-    critical_section!(log_mutex, {
+    critical_section!(log_semaphore, {
         println!("{:?}:", key);
 
         for msg in working_messages.iter() {
@@ -183,7 +183,7 @@ fn preamble(messages: &MessageList, keys_total: &mut u64) {
     println!();
 }
 
-fn crack_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_total: u64, log_mutex: Arc<Mutex<()>>) {
+fn crack_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_total: u64, log_semaphore: Semaphore) {
     let mut working_messages: MessageList = messages.clone();
     let mut key = Key::default();
     let mut keys_checked: u64 = 0;
@@ -192,7 +192,7 @@ fn crack_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_to
     let mut worker_keys_total = keys_total;
 
     permute_key!(worker_id, worker_total, worker_keys_total, key, {
-        try_key(&key, &mut working_messages, messages, &log_mutex);
+        try_key(&key, &mut working_messages, messages, &log_semaphore);
 
         keys_checked += 1;
         // XXX this makes the last round *look* like it's not changing in the
@@ -202,7 +202,7 @@ fn crack_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_to
             let now = Instant::now();
             let secs_since_last = now.duration_since(last_print).as_secs_f64();
             if secs_since_last >= 1f64 {
-                critical_section!(log_mutex, {
+                critical_section!(log_semaphore, {
                     println!("[worker {}] {:.2}% checked ({}/{} keys, {} keys/sec). last key: {:?}", worker_id, (keys_checked as f64 / worker_keys_total as f64) * 100f64, format_big_num(keys_checked as f64), format_big_num(worker_keys_total as f64), format_big_num((KPS_PRINT_MASK * (kps_accum_skips + 1)) as f64 / secs_since_last), key);
                 });
                 last_print = now;
@@ -213,7 +213,7 @@ fn crack_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_to
         }
     });
 
-    critical_section!(log_mutex, {
+    critical_section!(log_semaphore, {
         println!("[worker {}] checked {} keys (done)", worker_id, keys_checked);
     });
 }
@@ -234,18 +234,18 @@ pub fn crack(messages: MessageList, sequential: bool) {
     };
 
     println!("Using {} workers", worker_total);
-    let log_mutex: Arc<Mutex<()>> = Arc::new(Mutex::new(())); // FIXME why don't semaphores exist?
+    let log_semaphore = Semaphore::new();
     let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
     for worker_id in 1..worker_total {
-        let log_mutex = Arc::clone(&log_mutex);
+        let log_semaphore = log_semaphore.clone();
         let messages = messages.clone();
         handles.push(std::thread::spawn(move || {
-            crack_task(&messages, worker_id, worker_total, keys_total, log_mutex);
+            crack_task(&messages, worker_id, worker_total, keys_total, log_semaphore);
         }));
     }
 
-    crack_task(&messages, 0, worker_total, keys_total, log_mutex);
+    crack_task(&messages, 0, worker_total, keys_total, log_semaphore);
 
     for handle in handles {
         handle.join().unwrap();
