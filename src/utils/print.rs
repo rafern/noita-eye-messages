@@ -1,4 +1,4 @@
-use super::message::Message;
+use crate::data::message::Message;
 use colored::Colorize;
 
 #[derive(Default)]

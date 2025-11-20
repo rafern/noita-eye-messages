@@ -1,8 +1,6 @@
 use std::{fmt, process};
 use std::error::Error;
-use crate::utils::message::Message;
-
-use super::message::{MAX_MESSAGE_COUNT, MAX_MESSAGE_SIZE, MessageList};
+use super::message::{MAX_MESSAGE_COUNT, MAX_MESSAGE_SIZE, Message, MessageList};
 
 #[derive(Debug)]
 pub enum InvalidFormatErrorKind {

@@ -1,9 +1,10 @@
 use clap::{Parser, Subcommand};
 use commands::crack::crack;
-use utils::data_import::{import_csv_messages_or_exit};
+use data::csv_import::import_csv_messages_or_exit;
 
 mod utils;
 mod commands;
+mod data;
 
 #[derive(Parser)]
 struct Args {

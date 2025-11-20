@@ -1,7 +1,7 @@
 use std::time::Instant;
 use crate::critical_section;
 use crate::utils::threading::Semaphore;
-use crate::utils::message::{Message, MessageList};
+use crate::data::message::{Message, MessageList};
 use crate::utils::print::{print_message, format_big_num, MessagePrintConfig};
 use crate::utils::compare::{char_num, is_alphanum, is_ord, is_alpha, is_upper_alpha, is_lower_alpha, is_upper_atoi, is_lower_atoi, is_num};
 

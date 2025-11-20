@@ -1,4 +1,4 @@
-use super::stackvec::StackVec;
+use crate::utils::stackvec::StackVec;
 
 pub const MAX_MESSAGE_COUNT: usize = 9;
 pub const MAX_MESSAGE_SIZE: usize = 137 /*256 - 24*/;
