@@ -1,9 +1,20 @@
+use clap::Parser;
 use std::time::Instant;
-use crate::critical_section;
-use crate::utils::threading::Semaphore;
-use crate::data::message::{Message, MessageList};
-use crate::utils::print::{print_message, format_big_num, MessagePrintConfig};
-use crate::utils::compare::{char_num, is_alphanum, is_ord, is_alpha, is_upper_alpha, is_lower_alpha, is_upper_atoi, is_lower_atoi, is_num};
+use noita_eye_messages::critical_section;
+use noita_eye_messages::utils::threading::Semaphore;
+use noita_eye_messages::data::message::{Message, MessageList};
+use noita_eye_messages::utils::print::{print_message, format_big_num, MessagePrintConfig};
+use noita_eye_messages::utils::compare::{char_num, is_alphanum, is_ord, is_alpha, is_upper_alpha, is_lower_alpha, is_upper_atoi, is_lower_atoi, is_num};
+use noita_eye_messages::data::csv_import::import_csv_messages_or_exit;
+
+#[derive(Parser)]
+struct Args {
+    /// Path to CSV file containing message data. Use "data/all-original.csv" from the repository if you want to use the standard eye messages
+    data_path: std::path::PathBuf,
+    /// Disable parallelism (attempt to crack messages using only the main thread)
+    #[arg(short, long)]
+    sequential: bool,
+}
 
 const RAX_ORDER: i32 = 1; // RAX, ARX, XRA, RXA, AXR, XAR
 const ROUND_COUNT: usize = 2;
@@ -218,7 +229,9 @@ fn crack_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_to
     });
 }
 
-pub fn crack(messages: MessageList, sequential: bool) {
+fn main() {
+    let args = Args::parse();
+    let messages = import_csv_messages_or_exit(&args.data_path);
     if messages.len() == 0 {
         println!("Nothing to do; need at least one message");
         return;
@@ -227,7 +240,7 @@ pub fn crack(messages: MessageList, sequential: bool) {
     let mut keys_total: u64 = 0;
     preamble(&messages, &mut keys_total);
 
-    let worker_total = if sequential {
+    let worker_total = if args.sequential {
         1u32
     } else {
         (std::thread::available_parallelism().unwrap_or(unsafe { std::num::NonZero::new_unchecked(1) }).get() as u32).min(256)
