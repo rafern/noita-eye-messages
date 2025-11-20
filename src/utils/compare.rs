@@ -33,15 +33,3 @@ pub fn is_lower_atoi(b: u8) -> bool {
 pub fn is_ord(b: u8) -> bool {
     is_upper_atoi(b) || is_lower_atoi(b) || is_num(b)
 }
-
-pub fn format_big_num(x: f64) -> String {
-    if x >= 1_000_000_000_000f64 {
-        format!("{:.2}T", x / 1_000_000_000_000f64)
-    } else if x >= 1_000_000_000f64 {
-        format!("{:.2}B", x / 1_000_000_000f64)
-    } else if x >= 1_000_000f64 {
-        format!("{:.2}M", x / 1_000_000f64)
-    } else {
-        format!("{}", x)
-    }
-}
