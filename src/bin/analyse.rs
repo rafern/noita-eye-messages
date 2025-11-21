@@ -16,11 +16,16 @@ fn main() {
     let mut freqs = import_csv_languages_or_exit(&args.language);
     let messages = import_csv_messages_or_exit(&args.data_path);
 
-    let mut task_list = AsyncTaskList::new();
-
     let unit_totals = count_units(&messages);
-    bar_chart(&mut task_list, "Unit totals", "Unit", "Total", &unit_totals);
+    let freq = frequency_analysis("Ciphertext", &unit_totals);
 
-    freqs.push(frequency_analysis("Ciphertext", &unit_totals));
+    for other in &freqs {
+        println!("Frequency distribution error for {} and {}: {}", freq.name, other.name, freq.get_error(other));
+    }
+
+    freqs.push(freq);
+
+    let mut task_list = AsyncTaskList::new();
+    bar_chart(&mut task_list, "Unit totals", "Unit", "Total", &unit_totals);
     freq_bar_chart(&mut task_list, "Unit frequency", "Unit", "Frequency", freqs);
 }

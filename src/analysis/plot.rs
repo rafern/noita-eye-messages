@@ -158,9 +158,16 @@ pub fn freq_bar_chart(task_list: &mut AsyncTaskList, title: &str, x_label: &str,
     let mut x_max = 0;
 
     let mut f = 0;
-    let f_total = freqs.len() as f64;
+    let f_total = freqs.len();
     for freq in freqs {
-        let mut dataset = BarDataset::new(freq.name.as_str(), hsv_to_rgb(f as f64 / f_total, HSV_SAT, HSV_VAL));
+        let hue: f64 = if f_total == 2 && f == 1 {
+            // special case for 2 frequency distributions so your eyes don't bleed
+            0.666666
+        } else {
+            f as f64 / f_total as f64
+        };
+
+        let mut dataset = BarDataset::new(freq.name.as_str(), hsv_to_rgb(hue, HSV_SAT, HSV_VAL));
 
         for i in 0..freq.data.len() {
             let v = freq.data[i];

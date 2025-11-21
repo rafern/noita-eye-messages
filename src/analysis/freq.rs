@@ -28,6 +28,18 @@ impl Default for UnitFrequency {
     }
 }
 
+impl UnitFrequency {
+    pub fn get_error(&self, other: &UnitFrequency) -> f64 {
+        let mut error: f64 = 0.0;
+
+        for i in 0..UNITS {
+            error += (self.data[i] - other.data[i]).abs();
+        }
+
+        error
+    }
+}
+
 pub fn count_units(messages: &MessageList) -> UnitTotals {
     let mut counter: UnitTotals = [0; UNITS];
 
