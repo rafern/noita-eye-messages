@@ -1,8 +1,9 @@
 use clap::Parser;
+use noita_eye_messages::ciphers::arx::{ARX_ROUND_COUNT, ARXKey, decrypt_arx};
 use std::time::Instant;
 use noita_eye_messages::critical_section;
 use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore};
-use noita_eye_messages::data::message::{Message, MessageList};
+use noita_eye_messages::data::message::MessageList;
 use noita_eye_messages::utils::print::{print_message, format_big_num, MessagePrintConfig};
 use noita_eye_messages::utils::compare::{char_num, is_alphanum, is_ord, is_alpha, is_upper_alpha, is_lower_alpha, is_upper_atoi, is_lower_atoi, is_num};
 use noita_eye_messages::data::csv_import::import_csv_messages_or_exit;
@@ -11,31 +12,12 @@ use noita_eye_messages::data::csv_import::import_csv_messages_or_exit;
 struct Args {
     /// Path to CSV file containing message data
     data_path: std::path::PathBuf,
-    /// Disable parallelism (attempt to crack messages using only the main thread)
+    /// Disable parallelism (search messages using only the main thread)
     #[arg(short, long)]
     sequential: bool,
 }
 
-const RAX_ORDER: i32 = 1; // RAX, ARX, XRA, RXA, AXR, XAR
-const ROUND_COUNT: usize = 2;
 const KPS_PRINT_MASK: u64 = 0xffffff;
-
-#[derive(Debug)]
-#[derive(Default)]
-struct RAXRound {
-    /** range: 0-7. u32 instead of u8 for performance reasons */
-    rotate: u32,
-    /** range: 0-255 */
-    add: u8,
-    /** range: 0-255 */
-    xor: u8,
-}
-
-#[derive(Debug)]
-#[derive(Default)]
-struct Key {
-    rounds: [RAXRound; ROUND_COUNT],
-}
 
 macro_rules! permute_round_parameter {
     ($param:expr, $range_max:expr, $callback:block) => {
@@ -85,59 +67,10 @@ macro_rules! permute_key {
     };
 }
 
-fn apply_rax_round(in_byte: u8, round: &RAXRound) -> u8 {
-    let mut byte: u8 = in_byte;
-    match RAX_ORDER {
-        0 => {
-            byte = byte.rotate_right(round.rotate);
-            byte = byte.wrapping_add(round.add);
-            byte ^ round.xor
-        },
-        1 => {
-            byte = byte.wrapping_add(round.add);
-            byte = byte.rotate_right(round.rotate);
-            byte ^ round.xor
-        },
-        2 => {
-            byte ^= round.xor;
-            byte = byte.rotate_right(round.rotate);
-            byte.wrapping_add(round.add)
-        },
-        3 => {
-            byte = byte.rotate_right(round.rotate);
-            byte ^= round.xor;
-            byte.wrapping_add(round.add)
-        },
-        4 => {
-            byte = byte.wrapping_add(round.add);
-            byte ^= round.xor;
-            byte.rotate_right(round.rotate)
-        },
-        _ => {
-            byte ^= round.xor;
-            byte = byte.wrapping_add(round.add);
-            byte.rotate_right(round.rotate)
-        }
-    }
-}
-
-fn decrypt(ct_msg: &Message, pt_msg: &mut Message, key: &Key) {
-    // HACK only decrypting first char to get candidates for A-I, a-i or 0-9
-    for i in 0..1/*ct_msg.data_len*/ {
-        let mut byte = ct_msg.data[i];
-
-        for round in &key.rounds {
-            byte = apply_rax_round(byte, round);
-        }
-
-        pt_msg.data[i] = byte;
-    }
-}
-
-fn try_key(key: &Key, working_messages: &mut MessageList, messages: &MessageList, log_semaphore: &Semaphore) {
+fn try_key(key: &ARXKey, working_messages: &mut MessageList, messages: &MessageList, log_semaphore: &Semaphore) {
     // first message special case. put conditions for repeated sections here
     let pt_msg_0 = &mut working_messages[0];
-    decrypt(&messages[0], pt_msg_0, key);
+    decrypt_arx(&messages[0], pt_msg_0, key);
     // if pt_msg_0.data[1] != char_num(':') { return }
     // if pt_msg_0.data[1] != char_num('.') { return }
     // if pt_msg_0.data[2] != char_num(' ') { return }
@@ -149,7 +82,7 @@ fn try_key(key: &Key, working_messages: &mut MessageList, messages: &MessageList
     // other messages
     for m in 1..messages.len() {
         let pt_msg = &mut working_messages[m];
-        decrypt(&messages[m], pt_msg, key);
+        decrypt_arx(&messages[m], pt_msg, key);
 
         let pt_msg_m_0 = pt_msg.data[0];
         // if is_alpha(pt_msg_m_0) != is_alpha(pt_msg_0_0) { return }
@@ -174,13 +107,13 @@ fn try_key(key: &Key, working_messages: &mut MessageList, messages: &MessageList
 
 fn preamble(messages: &MessageList, keys_total: &mut u64) {
     let mut working_messages: MessageList = messages.clone();
-    let mut key = Key::default();
+    let mut key = ARXKey::default();
     permute_round!(key.rounds[0], {
         *keys_total += 1;
     });
-    *keys_total = keys_total.pow(ROUND_COUNT as u32);
+    *keys_total = keys_total.pow(ARX_ROUND_COUNT as u32);
 
-    println!("Checking {} RAX rounds ({} total permutations). Ciphertexts (mod_add 32):", ROUND_COUNT, *keys_total);
+    println!("Checking {} ARX rounds ({} total permutations). Ciphertexts (mod_add 32):", ARX_ROUND_COUNT, *keys_total);
 
     for m in 0..working_messages.len() {
         let msg = &mut working_messages[m];
@@ -194,9 +127,9 @@ fn preamble(messages: &MessageList, keys_total: &mut u64) {
     println!();
 }
 
-fn crack_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_total: u64, log_semaphore: Semaphore) {
+fn search_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_total: u64, log_semaphore: Semaphore) {
     let mut working_messages: MessageList = messages.clone();
-    let mut key = Key::default();
+    let mut key = ARXKey::default();
     let mut keys_checked: u64 = 0;
     let mut last_print = Instant::now();
     let mut kps_accum_skips = 0;
@@ -254,11 +187,11 @@ fn main() {
         let log_semaphore = log_semaphore.clone();
         let messages = messages.clone();
         task_list.add_async(move || {
-            crack_task(&messages, worker_id, worker_total, keys_total, log_semaphore);
+            search_task(&messages, worker_id, worker_total, keys_total, log_semaphore);
         });
     }
 
-    crack_task(&messages, 0, worker_total, keys_total, log_semaphore);
+    search_task(&messages, 0, worker_total, keys_total, log_semaphore);
 
     task_list.wait();
 
