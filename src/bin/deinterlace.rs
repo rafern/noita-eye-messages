@@ -7,7 +7,7 @@ use clap::Parser;
 struct Args {
     /// Stride to deinterlace with
     stride: usize,
-    /// Path to CSV file containing message data. Use "data/all-original.csv" from the repository if you want to use the standard eye messages
+    /// Path to CSV file containing message data
     in_data_path: std::path::PathBuf,
     /// Path where CSV files with deinterlaced contents will be stored. A "-0" to "-3" suffix will be added to the file name if, for example, you are deinterlacing with a stride of 4
     out_data_path: std::path::PathBuf,

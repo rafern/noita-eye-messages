@@ -1,4 +1,4 @@
 /target
-/images
+/data/images
 *.sublime-project
 *.sublime-workspace

@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::time::Instant;
 use noita_eye_messages::critical_section;
-use noita_eye_messages::utils::threading::Semaphore;
+use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore};
 use noita_eye_messages::data::message::{Message, MessageList};
 use noita_eye_messages::utils::print::{print_message, format_big_num, MessagePrintConfig};
 use noita_eye_messages::utils::compare::{char_num, is_alphanum, is_ord, is_alpha, is_upper_alpha, is_lower_alpha, is_upper_atoi, is_lower_atoi, is_num};
@@ -9,7 +9,7 @@ use noita_eye_messages::data::csv_import::import_csv_messages_or_exit;
 
 #[derive(Parser)]
 struct Args {
-    /// Path to CSV file containing message data. Use "data/all-original.csv" from the repository if you want to use the standard eye messages
+    /// Path to CSV file containing message data
     data_path: std::path::PathBuf,
     /// Disable parallelism (attempt to crack messages using only the main thread)
     #[arg(short, long)]
@@ -248,21 +248,19 @@ fn main() {
 
     println!("Using {} workers", worker_total);
     let log_semaphore = Semaphore::new();
-    let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
+    let mut task_list = AsyncTaskList::new();
 
     for worker_id in 1..worker_total {
         let log_semaphore = log_semaphore.clone();
         let messages = messages.clone();
-        handles.push(std::thread::spawn(move || {
+        task_list.add_async(move || {
             crack_task(&messages, worker_id, worker_total, keys_total, log_semaphore);
-        }));
+        });
     }
 
     crack_task(&messages, 0, worker_total, keys_total, log_semaphore);
 
-    for handle in handles {
-        handle.join().unwrap();
-    }
+    task_list.wait();
 
     println!("All workers done");
 }
