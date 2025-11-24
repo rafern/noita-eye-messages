@@ -172,11 +172,18 @@ fn search_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_t
 
     let lua = setup_lua(&log_semaphore).unwrap();
     lua.load(r#"
+        require "bit32"
+
         function decrypt(byte, key)
-            local add = eyes.mod_add_byte;
-            local rot = eyes.rotate_byte;
-            local xor = eyes.xor_byte;
-            return xor(rot(add(xor(rot(add(byte, key[1]), key[2]), key[3]), key[4]), key[5]), key[6])
+            byte = (byte + key[1]) % 256;
+            if key[2] ~= 0 then
+                byte = bit32.bor(bit32.lshift(bit32.extract(byte, 0, key[2]), 8 - key[2]), bit32.rshift(byte, key[2]));
+            end
+            byte = (bit32.bxor(byte, key[3]) + key[4]) % 256;
+            if key[5] ~= 0 then
+                byte = bit32.bor(bit32.lshift(bit32.extract(byte, 0, key[5]), 8 - key[5]), bit32.rshift(byte, key[5]));
+            end
+            return bit32.bxor(byte, key[6])
         end
     "#).exec().unwrap();
 
