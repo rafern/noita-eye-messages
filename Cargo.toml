@@ -9,6 +9,7 @@ colored = "3.0.0"
 dataviz = "0.1.9"
 fontconfig = "0.10.0"
 minifb = "0.28.0"
+mlua = { version = "0.11.5", features = ["luajit52", "vendored"] }
 
 [profile.release]
 # for some reason thin lto has better performance on my machine
