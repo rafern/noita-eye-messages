@@ -1,7 +1,11 @@
+#![feature(allocator_api)]
+
 use clap::Parser;
-use mlua::Lua;
 use noita_eye_messages::ciphers::arx::{ARX_ROUND_COUNT, ARXKey};
+use rune::termcolor::{ColorChoice, StandardStream};
+use rune::{Context, Diagnostics, Source, Sources, Unit, Vm, from_value};
 use std::error::Error;
+use std::sync::Arc;
 use std::time::Instant;
 use noita_eye_messages::critical_section;
 use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore};
@@ -72,10 +76,10 @@ macro_rules! permute_key {
     };
 }
 
-fn try_key(key: &ARXKey, working_messages: &mut MessageList, messages: &MessageList, log_semaphore: &Semaphore, decrypt: &mlua::Function) {
+fn try_key(key: &ARXKey, working_messages: &mut MessageList, messages: &MessageList, log_semaphore: &Semaphore, script_ctx: &mut Vm) {
     // first message special case. put conditions for repeated sections here
     let pt_msg_0 = &mut working_messages[0];
-    pt_msg_0.data[0] = decrypt.call::<u8>((messages[0].data[0], [key.rounds[0].add, key.rounds[0].rotate, key.rounds[0].xor, key.rounds[1].add, key.rounds[1].rotate, key.rounds[1].xor])).unwrap();
+    pt_msg_0.data[0] = from_value(script_ctx.call(["decrypt"], (messages[0].data[0], [key.rounds[0].add, key.rounds[0].rotate, key.rounds[0].xor, key.rounds[1].add, key.rounds[1].rotate, key.rounds[1].xor])).unwrap()).unwrap();
     // if pt_msg_0.data[1] != char_num(':') { return }
     // if pt_msg_0.data[1] != char_num('.') { return }
     // if pt_msg_0.data[2] != char_num(' ') { return }
@@ -87,7 +91,7 @@ fn try_key(key: &ARXKey, working_messages: &mut MessageList, messages: &MessageL
     // other messages
     for m in 1..messages.len() {
         let pt_msg_m = &mut working_messages[m];
-        pt_msg_m.data[0] = decrypt.call::<u8>((messages[m].data[0], [key.rounds[0].add, key.rounds[0].rotate, key.rounds[0].xor, key.rounds[1].add, key.rounds[1].rotate, key.rounds[1].xor])).unwrap();
+        pt_msg_m.data[0] = from_value(script_ctx.call(["decrypt"], (messages[m].data[0], [key.rounds[0].add, key.rounds[0].rotate, key.rounds[0].xor, key.rounds[1].add, key.rounds[1].rotate, key.rounds[1].xor])).unwrap()).unwrap();
 
         let pt_msg_m_0 = pt_msg_m.data[0];
         // if is_alpha(pt_msg_m_0) != is_alpha(pt_msg_0_0) { return }
@@ -132,34 +136,61 @@ fn preamble(messages: &MessageList, keys_total: &mut u64) {
     println!();
 }
 
-fn setup_lua(log_semaphore: &Semaphore) -> Result<Lua, Box<dyn Error>> {
-    let lua = Lua::new();
+fn setup_script(_log_semaphore: &Semaphore) -> Result<Vm, Box<dyn Error>> {
+    let context = Context::with_default_modules()?;
+    let runtime = Arc::try_new(context.runtime()?)?;
 
-    let api_table = lua.create_table()?;
-    let log_semaphore = log_semaphore.clone();
+    let mut sources = Sources::new();
+    sources.insert(Source::memory(r#"
+        pub fn decrypt(byte, key) {
+            byte = (byte + key[0]) % 256;
+            byte = (((byte & (255u8 >> (8 - key[1]))) << (8 - key[1])) | (byte >> key[1]));
+            byte = ((byte ^ key[2]) + key[3]) % 256;
+            byte = (((byte & (255u8 >> (8 - key[4]))) << (8 - key[4])) | (byte >> key[4]));
+            return byte ^ key[5];
+        }
+    "#)?);
 
-    api_table.set("print", lua.create_function(move |_, msg: String| {
-        critical_section!(log_semaphore, {
-            println!("[Lua] {}", msg);
-        });
-        Ok(())
-    })?)?;
+    let mut diagnostics = Diagnostics::new();
 
-    api_table.set("mod_add_byte", lua.create_function(|_, (lhs, rhs): (u8, u8)| {
-        Ok(lhs.wrapping_add(rhs))
-    })?)?;
+    let result = rune::prepare(&mut sources)
+        .with_context(&context)
+        .with_diagnostics(&mut diagnostics)
+        .build();
 
-    api_table.set("rotate_byte", lua.create_function(|_, (lhs, rhs): (u8, u32)| {
-        Ok(lhs.rotate_right(rhs))
-    })?)?;
+    if !diagnostics.is_empty() {
+        let mut writer = StandardStream::stderr(ColorChoice::Always);
+        diagnostics.emit(&mut writer, &sources)?;
+    }
 
-    api_table.set("xor_byte", lua.create_function(|_, (lhs, rhs): (u8, u8)| {
-        Ok(lhs ^ rhs)
-    })?)?;
+    let unit = result?;
+    let unit = Arc::try_new(unit)?;
+    let vm = Vm::new(runtime, unit);
 
-    lua.globals().set("eyes", api_table)?;
+    // let log_semaphore = log_semaphore.clone();
 
-    Ok(lua)
+    // api_table.set("print", lua.create_function(move |_, msg: String| {
+    //     critical_section!(log_semaphore, {
+    //         println!("[Lua] {}", msg);
+    //     });
+    //     Ok(())
+    // })?)?;
+
+    // api_table.set("mod_add_byte", lua.create_function(|_, (lhs, rhs): (u8, u8)| {
+    //     Ok(lhs.wrapping_add(rhs))
+    // })?)?;
+
+    // api_table.set("rotate_byte", lua.create_function(|_, (lhs, rhs): (u8, u32)| {
+    //     Ok(lhs.rotate_right(rhs))
+    // })?)?;
+
+    // api_table.set("xor_byte", lua.create_function(|_, (lhs, rhs): (u8, u8)| {
+    //     Ok(lhs ^ rhs)
+    // })?)?;
+
+    // lua.globals().set("eyes", api_table)?;
+
+    Ok(vm)
 }
 
 fn search_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_total: u64, log_semaphore: Semaphore) {
@@ -170,27 +201,10 @@ fn search_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_t
     let mut kps_accum_skips = 0;
     let mut worker_keys_total = keys_total;
 
-    let lua = setup_lua(&log_semaphore).unwrap();
-    lua.load(r#"
-        require "bit32"
-
-        function decrypt(byte, key)
-            byte = (byte + key[1]) % 256;
-            if key[2] ~= 0 then
-                byte = bit32.bor(bit32.lshift(bit32.extract(byte, 0, key[2]), 8 - key[2]), bit32.rshift(byte, key[2]));
-            end
-            byte = (bit32.bxor(byte, key[3]) + key[4]) % 256;
-            if key[5] ~= 0 then
-                byte = bit32.bor(bit32.lshift(bit32.extract(byte, 0, key[5]), 8 - key[5]), bit32.rshift(byte, key[5]));
-            end
-            return bit32.bxor(byte, key[6])
-        end
-    "#).exec().unwrap();
-
-    let decrypt = lua.globals().get::<mlua::Function>("decrypt").unwrap();
+    let mut script_ctx = setup_script(&log_semaphore).unwrap();
 
     permute_key!(worker_id, worker_total, worker_keys_total, key, {
-        try_key(&key, &mut working_messages, messages, &log_semaphore, &decrypt);
+        try_key(&key, &mut working_messages, messages, &log_semaphore, &mut script_ctx);
 
         keys_checked += 1;
         // XXX this makes the last round *look* like it's not changing in the
