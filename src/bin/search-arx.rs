@@ -1,5 +1,6 @@
 use clap::Parser;
 use noita_eye_messages::ciphers::arx::{ARXCipher, ARXCipherContext, ARXCipherDecryptContext};
+use noita_eye_messages::ciphers::base::{Cipher, CipherContext, CipherDecryptionContext};
 use std::time::Instant;
 use noita_eye_messages::critical_section;
 use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore};
@@ -22,7 +23,7 @@ struct Args {
 
 const KPS_PRINT_MASK: u64 = 0xffffff;
 
-fn try_key(decrypt_ctx: &mut ARXCipherDecryptContext, log_semaphore: &Semaphore) {
+fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, log_semaphore: &Semaphore) {
     // first message special case. put conditions for repeated sections here
     let pt_0_0 = decrypt_ctx.decrypt(0, 0);
 
@@ -70,7 +71,7 @@ fn preamble(cipher: &ARXCipher, messages: &MessageList, keys_total: u64) {
     println!();
 }
 
-fn search_task(worker_id: u32, ctx: ARXCipherContext, log_semaphore: Semaphore) {
+fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, log_semaphore: Semaphore) {
     let mut keys_checked: u64 = 0;
     let mut last_print = Instant::now();
     let mut kps_accum_skips = 0;
@@ -78,7 +79,7 @@ fn search_task(worker_id: u32, ctx: ARXCipherContext, log_semaphore: Semaphore) 
     // TODO use bigint, as total key count might get ridiculous
     let worker_keys_total = ctx.get_total_keys() as f64;
 
-    ctx.permute_keys(|decrypt_ctx| {
+    ctx.permute_keys(&mut |decrypt_ctx| {
         try_key(decrypt_ctx, &log_semaphore);
 
         keys_checked += 1;

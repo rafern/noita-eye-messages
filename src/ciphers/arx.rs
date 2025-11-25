@@ -1,11 +1,13 @@
-use crate::{data::message::{Message, MessageList}, utils::{stackvec::StackVec, threading::get_worker_slice}};
-
 /**
  * WARNING:
  * As Lymm stated on Discord, this is equivalent to a homophonic substitution
- * cipher, so this is now used as just a test-bench. Don't actually use this to
- * do cryptanalysis
+ * cipher, so this is now used as just a test-bench/example. Don't actually use
+ * this to do cryptanalysis
  */
+
+use crate::{data::message::{Message, MessageList}, utils::{stackvec::StackVec, threading::get_worker_slice}};
+
+use super::base::{Cipher, CipherContext, CipherDecryptionContext};
 
 macro_rules! permute_round_parameter {
     ($param:expr, $range_max:expr, $callback:block) => {
@@ -33,7 +35,7 @@ pub const ARX_ROUND_COUNT: usize = 2;
 
 #[derive(Debug)]
 #[derive(Default)]
-pub struct ARXRound {
+struct ARXRound {
     /** range: 0-7. u32 instead of u8 for performance reasons */
     pub rotate: u32,
     /** range: 0-255 */
@@ -44,11 +46,11 @@ pub struct ARXRound {
 
 #[derive(Debug)]
 #[derive(Default)]
-pub struct ARXKey {
+struct ARXKey {
     pub rounds: [ARXRound; ARX_ROUND_COUNT],
 }
 
-pub fn apply_arx_round(in_byte: u8, round: &ARXRound) -> u8 {
+fn apply_arx_round(in_byte: u8, round: &ARXRound) -> u8 {
     let mut byte: u8 = in_byte;
     match ARX_ORDER {
         0 => {
@@ -89,8 +91,8 @@ pub struct ARXCipherDecryptContext<'a> {
     ctx: &'a ARXCipherContext,
 }
 
-impl ARXCipherDecryptContext<'_> {
-    pub fn decrypt(&mut self, message_index: usize, unit_index: usize) -> u8 {
+impl<'a> CipherDecryptionContext<'a> for ARXCipherDecryptContext<'a> {
+    fn decrypt(&mut self, message_index: usize, unit_index: usize) -> u8 {
         let mut byte = self.ctx.ciphertexts[message_index].data[unit_index];
 
         for round in &self.key.rounds {
@@ -100,15 +102,15 @@ impl ARXCipherDecryptContext<'_> {
         byte
     }
 
-    pub fn get_plaintext_count(&self) -> usize {
+    fn get_plaintext_count(&self) -> usize {
         self.ctx.ciphertexts.len()
     }
 
-    pub fn get_plaintext_len(&self, message_index: usize) -> usize {
+    fn get_plaintext_len(&self, message_index: usize) -> usize {
         self.ctx.ciphertexts[message_index].data.len()
     }
 
-    pub fn get_plaintext(&mut self, message_index: usize) -> Message {
+    fn get_plaintext(&mut self, message_index: usize) -> Message {
         let ct = &self.ctx.ciphertexts[message_index];
         let mut data = StackVec::default();
 
@@ -122,7 +124,9 @@ impl ARXCipherDecryptContext<'_> {
         }
     }
 
-    pub fn serialize_key(&self) -> String {
+    fn serialize_key(&self) -> String {
+        // TODO use serde instead, this is temporary. deserialization will be
+        //      supported in the future
         format!("{:?}", self.key)
     }
 }
@@ -133,16 +137,16 @@ pub struct ARXCipherContext {
     a_max: u8,
 }
 
-impl ARXCipherContext {
-    pub fn get_total_keys(&self) -> u64 {
+impl CipherContext for ARXCipherContext {
+    fn get_total_keys(&self) -> u64 {
         ((self.a_max - self.a_min) as u64 + 1) * 2048 * (524288u64.pow(ARX_ROUND_COUNT as u32 - 1))
     }
 
-    pub fn get_ciphertexts(&self) -> &MessageList {
+    fn get_ciphertexts(&self) -> &MessageList {
         &self.ciphertexts
     }
 
-    pub fn permute_keys<T: FnMut(&mut ARXCipherDecryptContext) -> bool>(&self, mut callback: T) {
+    fn permute_keys<'a>(&'a self, callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>) -> bool) {
         let mut decrypt_ctx = ARXCipherDecryptContext {
             key: ARXKey::default(),
             ctx: &self,
@@ -156,7 +160,7 @@ impl ARXCipherContext {
                 for r0r in 0..=7 {
                     decrypt_ctx.key.rounds[0].rotate = r0r;
                     permute_round!(decrypt_ctx.key.rounds[1], {
-                        if !callback(&mut decrypt_ctx) { return }
+                        if !(*callback)(&mut decrypt_ctx) { return }
                     });
                 }
             }
@@ -171,16 +175,18 @@ impl ARXCipher {
     pub fn new() -> Self {
         ARXCipher {}
     }
+}
 
-    pub fn get_max_parallelism(&self) -> u32 { 256 }
+impl Cipher for ARXCipher {
+    fn get_max_parallelism(&self) -> u32 { 256 }
 
-    pub fn create_context_parallel(&self, ciphertexts: MessageList, worker_id: u32, worker_total: u32) -> ARXCipherContext {
+    fn create_context_parallel(&self, ciphertexts: MessageList, worker_id: u32, worker_total: u32) -> Box<dyn CipherContext> {
         let (a_min, a_max) = get_worker_slice::<u8>(255, worker_id, worker_total);
 
-        ARXCipherContext {
+        Box::new(ARXCipherContext {
             ciphertexts,
             a_min,
             a_max,
-        }
+        })
     }
 }
