@@ -160,7 +160,7 @@ impl CipherContext for ARXCipherContext {
                 for r0r in 0..=7 {
                     decrypt_ctx.key.rounds[0].rotate = r0r;
                     permute_round!(decrypt_ctx.key.rounds[1], {
-                        if !(*callback)(&mut decrypt_ctx) { return }
+                        if !callback(&mut decrypt_ctx) { return }
                     });
                 }
             }
