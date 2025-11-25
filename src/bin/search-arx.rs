@@ -1,5 +1,5 @@
 use clap::Parser;
-use noita_eye_messages::ciphers::arx::{ARX_ROUND_COUNT, ARXKey, decrypt_arx};
+use noita_eye_messages::ciphers::arx::{ARXCipher, ARXCipherContext, ARXCipherDecryptContext};
 use std::time::Instant;
 use noita_eye_messages::critical_section;
 use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore};
@@ -7,6 +7,9 @@ use noita_eye_messages::data::message::MessageList;
 use noita_eye_messages::utils::print::{print_message, format_big_num, MessagePrintConfig};
 use noita_eye_messages::utils::compare::{char_num, is_alphanum, is_ord, is_alpha, is_upper_alpha, is_lower_alpha, is_upper_atoi, is_lower_atoi, is_num};
 use noita_eye_messages::data::csv_import::import_csv_messages_or_exit;
+
+// TODO: use fasteval for search conditions, and pass them via CLI
+// TODO: generalise the search command; have a generic cipher API and generic key permutation logic
 
 #[derive(Parser)]
 struct Args {
@@ -19,85 +22,30 @@ struct Args {
 
 const KPS_PRINT_MASK: u64 = 0xffffff;
 
-macro_rules! permute_round_parameter {
-    ($param:expr, $range_max:expr, $callback:block) => {
-        for x in 0..=$range_max {
-            $param = x;
-            $callback
-        }
-    }
-}
-
-macro_rules! _permute_round {
-    ($round:expr, $callback:block) => {
-        permute_round_parameter!($round.add, 255, {
-            permute_round_parameter!($round.rotate, 7, {
-                $callback
-            });
-        });
-    };
-}
-
-macro_rules! permute_round {
-    ($worker_id:expr, $worker_total:expr, $worker_keys_total:expr, $round:expr, $callback:block) => {
-        let x_min = (($worker_id * 256) / $worker_total) as i32;
-        let x_max = ((($worker_id + 1) * 256) / $worker_total) as i32;
-        $worker_keys_total = ($worker_keys_total as f64 * ((x_max - x_min) as f64 / 256f64)) as u64;
-        for x in x_min as u8..=(x_max - 1) as u8 {
-            $round.xor = x;
-            _permute_round!($round, $callback);
-        }
-    };
-    ($round:expr, $callback:block) => {
-        permute_round_parameter!($round.xor, 255, {
-            _permute_round!($round, $callback);
-        });
-    };
-}
-
-macro_rules! permute_key {
-    ($worker_id:expr, $worker_total:expr, $worker_keys_total:expr, $key:expr, $callback:block) => {
-        // TODO it would be nice if this code could be generated, but i couldn't
-        //      figure out how to do recursive macros
-        permute_round!($worker_id, $worker_total, $worker_keys_total, $key.rounds[0], {
-            permute_round!($key.rounds[1], {
-                $callback
-            });
-        });
-    };
-}
-
-fn try_key(key: &ARXKey, working_messages: &mut MessageList, messages: &MessageList, log_semaphore: &Semaphore) {
+fn try_key(decrypt_ctx: &mut ARXCipherDecryptContext, log_semaphore: &Semaphore) {
     // first message special case. put conditions for repeated sections here
-    let pt_msg_0 = &mut working_messages[0];
-    decrypt_arx(&messages[0], pt_msg_0, key);
-    // if pt_msg_0.data[1] != char_num(':') { return }
-    // if pt_msg_0.data[1] != char_num('.') { return }
-    // if pt_msg_0.data[2] != char_num(' ') { return }
+    let pt_0_0 = decrypt_ctx.decrypt(0, 0);
 
-    let pt_msg_0_0 = pt_msg_0.data[0];
-    // if !is_alphanum(pt_msg_0_0) { return }
-    if !is_ord(pt_msg_0_0) { return }
+    // if !is_alphanum(pt_0_0) { return }
+    if !is_ord(pt_0_0) { return }
 
     // other messages
-    for m in 1..messages.len() {
-        let pt_msg = &mut working_messages[m];
-        decrypt_arx(&messages[m], pt_msg, key);
+    for m in 1..decrypt_ctx.get_plaintext_count() {
+        let pt_m_0 = decrypt_ctx.decrypt(m, 0);
 
-        let pt_msg_m_0 = pt_msg.data[0];
-        // if is_alpha(pt_msg_m_0) != is_alpha(pt_msg_0_0) { return }
-        // if is_upper_alpha(pt_msg_m_0) != is_upper_alpha(pt_msg_0_0) { return }
-        // if is_lower_alpha(pt_msg_m_0) != is_lower_alpha(pt_msg_0_0) { return }
-        if is_upper_atoi(pt_msg_m_0) != is_upper_atoi(pt_msg_0_0) { return }
-        if is_lower_atoi(pt_msg_m_0) != is_lower_atoi(pt_msg_0_0) { return }
-        if is_num(pt_msg_m_0) != is_num(pt_msg_0_0) { return }
+        // if is_alpha(pt_m_0) != is_alpha(pt_0_0) { return }
+        // if is_upper_alpha(pt_m_0) != is_upper_alpha(pt_0_0) { return }
+        // if is_lower_alpha(pt_m_0) != is_lower_alpha(pt_0_0) { return }
+        if is_upper_atoi(pt_m_0) != is_upper_atoi(pt_0_0) { return }
+        if is_lower_atoi(pt_m_0) != is_lower_atoi(pt_0_0) { return }
+        if is_num(pt_m_0) != is_num(pt_0_0) { return }
     }
 
     critical_section!(log_semaphore, {
-        println!("{:?}:", key);
+        println!("{:?}:", decrypt_ctx.serialize_key());
 
-        for msg in working_messages.iter() {
-            print_message(msg, MessagePrintConfig {
+        for m in 0..decrypt_ctx.get_plaintext_count() {
+            print_message(&decrypt_ctx.get_plaintext(m), MessagePrintConfig {
                 multiview: true,
                 max_len: 8,
             });
@@ -105,15 +53,10 @@ fn try_key(key: &ARXKey, working_messages: &mut MessageList, messages: &MessageL
     });
 }
 
-fn preamble(messages: &MessageList, keys_total: &mut u64) {
+fn preamble(cipher: &ARXCipher, messages: &MessageList, keys_total: u64) {
     let mut working_messages: MessageList = messages.clone();
-    let mut key = ARXKey::default();
-    permute_round!(key.rounds[0], {
-        *keys_total += 1;
-    });
-    *keys_total = keys_total.pow(ARX_ROUND_COUNT as u32);
 
-    println!("Checking {} ARX rounds ({} total permutations). Ciphertexts (mod_add 32):", ARX_ROUND_COUNT, *keys_total);
+    println!("Searching {} keys with cipher {:?}. Ciphertexts (mod_add 32):", keys_total, cipher);
 
     for m in 0..working_messages.len() {
         let msg = &mut working_messages[m];
@@ -127,16 +70,16 @@ fn preamble(messages: &MessageList, keys_total: &mut u64) {
     println!();
 }
 
-fn search_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_total: u64, log_semaphore: Semaphore) {
-    let mut working_messages: MessageList = messages.clone();
-    let mut key = ARXKey::default();
+fn search_task(worker_id: u32, ctx: ARXCipherContext, log_semaphore: Semaphore) {
     let mut keys_checked: u64 = 0;
     let mut last_print = Instant::now();
     let mut kps_accum_skips = 0;
-    let mut worker_keys_total = keys_total;
 
-    permute_key!(worker_id, worker_total, worker_keys_total, key, {
-        try_key(&key, &mut working_messages, messages, &log_semaphore);
+    // TODO use bigint, as total key count might get ridiculous
+    let worker_keys_total = ctx.get_total_keys() as f64;
+
+    ctx.permute_keys(|decrypt_ctx| {
+        try_key(decrypt_ctx, &log_semaphore);
 
         keys_checked += 1;
         // XXX this makes the last round *look* like it's not changing in the
@@ -147,7 +90,7 @@ fn search_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_t
             let secs_since_last = now.duration_since(last_print).as_secs_f64();
             if secs_since_last >= 1f64 {
                 critical_section!(log_semaphore, {
-                    println!("[worker {}] {:.2}% checked ({}/{} keys, {} keys/sec). last key: {:?}", worker_id, (keys_checked as f64 / worker_keys_total as f64) * 100f64, format_big_num(keys_checked as f64), format_big_num(worker_keys_total as f64), format_big_num((KPS_PRINT_MASK * (kps_accum_skips + 1)) as f64 / secs_since_last), key);
+                    println!("[worker {}] {:.2}% checked ({}/{} keys, {} keys/sec). last key: {}", worker_id, (keys_checked as f64 / worker_keys_total) * 100f64, format_big_num(keys_checked as f64), format_big_num(worker_keys_total), format_big_num((KPS_PRINT_MASK * (kps_accum_skips + 1)) as f64 / secs_since_last), decrypt_ctx.serialize_key());
                 });
                 last_print = now;
                 kps_accum_skips = 0;
@@ -155,6 +98,8 @@ fn search_task(messages: &MessageList, worker_id: u32, worker_total: u32, keys_t
                 kps_accum_skips += 1;
             }
         }
+
+        true
     });
 
     critical_section!(log_semaphore, {
@@ -170,13 +115,14 @@ fn main() {
         return;
     }
 
+    let cipher = ARXCipher::new();
+
     let mut keys_total: u64 = 0;
-    preamble(&messages, &mut keys_total);
 
     let worker_total = if args.sequential {
         1u32
     } else {
-        (std::thread::available_parallelism().unwrap_or(unsafe { std::num::NonZero::new_unchecked(1) }).get() as u32).min(256)
+        (std::thread::available_parallelism().unwrap_or(unsafe { std::num::NonZero::new_unchecked(1) }).get() as u32).min(cipher.get_max_parallelism())
     };
 
     println!("Using {} workers", worker_total);
@@ -185,13 +131,18 @@ fn main() {
 
     for worker_id in 1..worker_total {
         let log_semaphore = log_semaphore.clone();
-        let messages = messages.clone();
+        let context = cipher.create_context_parallel(messages.clone(), worker_id, worker_total);
+        keys_total += context.get_total_keys();
         task_list.add_async(move || {
-            search_task(&messages, worker_id, worker_total, keys_total, log_semaphore);
+            search_task(worker_id, context, log_semaphore);
         });
     }
 
-    search_task(&messages, 0, worker_total, keys_total, log_semaphore);
+    let context = cipher.create_context_parallel(messages, 0, worker_total);
+    keys_total += context.get_total_keys();
+    preamble(&cipher, context.get_ciphertexts(), keys_total);
+
+    search_task(0, context, log_semaphore);
 
     task_list.wait();
 

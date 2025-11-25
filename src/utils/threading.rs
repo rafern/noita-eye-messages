@@ -63,3 +63,12 @@ impl Semaphore {
         self.mutex.lock().unwrap()
     }
 }
+
+pub fn get_worker_slice<T>(max_value: T, worker_id: u32, worker_total: u32) -> (T, T) where
+    T: TryFrom<usize> + Into<usize> + Copy,
+    <T as TryFrom<usize>>::Error: std::fmt::Debug
+{
+    let min = (worker_id as usize * (T::into(max_value) + 1)) / worker_total as usize;
+    let max = ((worker_id + 1) as usize * (T::into(max_value) + 1)) / worker_total as usize;
+    (T::try_from(min).unwrap(), T::try_from(max - 1).unwrap())
+}
