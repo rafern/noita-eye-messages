@@ -80,7 +80,7 @@ impl<'a> CipherDecryptionContext<'a> for ARXCipherDecryptContext<'a> {
         let mut data = StackVec::default();
 
         for i in 0..ct.data.len() {
-            data[i] = self.decrypt(message_index, i);
+            data.push(self.decrypt(message_index, i));
         }
 
         Message {

@@ -1,19 +1,21 @@
 use clap::Parser;
 use noita_eye_messages::ciphers::base::{Cipher, CipherContext, CipherDecryptionContext};
 use noita_eye_messages::ciphers::deserialise_cipher;
+use noita_eye_messages::utils::user_condition::UserCondition;
 use rug::Integer;
 use std::time::Instant;
 use noita_eye_messages::critical_section;
 use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore, get_parallelism};
 use noita_eye_messages::data::message::MessageList;
 use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, print_message};
-use noita_eye_messages::utils::compare::{char_num, is_alphanum, is_ord, is_alpha, is_upper_alpha, is_lower_alpha, is_upper_atoi, is_lower_atoi, is_num};
 use noita_eye_messages::data::csv_import::import_csv_messages_or_exit;
 
-#[derive(Parser)]
+#[derive(clap::Parser)]
 struct Args {
     /// Path to CSV file containing message data
     data_path: std::path::PathBuf,
+    /// Condition to match. Values greater than 0 are treated as true, which should make it easy to use heuristics with thresholds as conditions (simply subtract the threshold value from the heuristic)
+    condition: String,
     /// Cipher to use
     cipher: String,
     /// Cipher configuration. Format is cipher-specific, but generally expected to be Rusty Object Notation. It's recommended to add this as the last argument after a "--"
@@ -25,27 +27,26 @@ struct Args {
 
 const KPS_PRINT_MASK: u32 = 0xffffff;
 
-fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, log_semaphore: &Semaphore) {
-    // first message special case. put conditions for repeated sections here
-    let pt_0_0 = decrypt_ctx.decrypt(0, 0);
+fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, cond: &UserCondition, log_semaphore: &Semaphore) {
+    let mut val_cb = |name:&str, args:Vec<f64>| -> Option<f64> {
+        match name {
+            "pt" => {
+                let m: usize = (*args.get(0)?) as usize;
+                if m > decrypt_ctx.get_plaintext_count() { return None }
 
-    // if !is_alphanum(pt_0_0) { return }
-    if !is_ord(pt_0_0) { return }
+                let u: usize = (*args.get(1)?) as usize;
+                if u > decrypt_ctx.get_plaintext_len(m) { return None }
 
-    // other messages
-    for m in 1..decrypt_ctx.get_plaintext_count() {
-        let pt_m_0 = decrypt_ctx.decrypt(m, 0);
+                Some(decrypt_ctx.decrypt(m, u) as f64)
+            },
+            _ => None,
+        }
+    };
 
-        // if is_alpha(pt_m_0) != is_alpha(pt_0_0) { return }
-        // if is_upper_alpha(pt_m_0) != is_upper_alpha(pt_0_0) { return }
-        // if is_lower_alpha(pt_m_0) != is_lower_alpha(pt_0_0) { return }
-        if is_upper_atoi(pt_m_0) != is_upper_atoi(pt_0_0) { return }
-        if is_lower_atoi(pt_m_0) != is_lower_atoi(pt_0_0) { return }
-        if is_num(pt_m_0) != is_num(pt_0_0) { return }
-    }
+    if !cond.eval_condition(&mut val_cb).unwrap() { return }
 
     critical_section!(log_semaphore, {
-        println!("{:?}:", decrypt_ctx.serialize_key());
+        println!("match with key {}:", decrypt_ctx.serialize_key());
 
         for m in 0..decrypt_ctx.get_plaintext_count() {
             print_message(&decrypt_ctx.get_plaintext(m), MessagePrintConfig {
@@ -73,7 +74,7 @@ fn preamble(messages: &MessageList, keys_total: Integer) {
     println!();
 }
 
-fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, log_semaphore: Semaphore) {
+fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: UserCondition, log_semaphore: Semaphore) {
     let mut keys_checked = Integer::new();
     let mut keys_checked_accum: u32 = 0;
     let mut last_print = Instant::now();
@@ -82,7 +83,7 @@ fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, log_semaphore: Semap
     let worker_keys_total = ctx.get_total_keys();
 
     ctx.permute_keys(&mut |decrypt_ctx| {
-        try_key(decrypt_ctx, &log_semaphore);
+        try_key(decrypt_ctx, &cond, &log_semaphore);
 
         keys_checked_accum += 1;
         // XXX this makes the last round *look* like it's not changing in the
@@ -114,24 +115,22 @@ fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, log_semaphore: Semap
     });
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    // XXX this won't be cloned for other threads, because fasteval doesn't
+    //     support it :/. it's still helpful to do this early so that it fails
+    //     fast, but the condition has to be re-parsed for each thread
+    let cond = UserCondition::new(&args.condition)?;
 
     let messages = import_csv_messages_or_exit(&args.data_path);
     if messages.len() == 0 {
+        // TODO return error result instead
         eprintln!("Nothing to do; need at least one message");
         std::process::exit(1);
     }
 
-    let cipher = match deserialise_cipher(&args.cipher, &args.config) {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!("Cipher setup failed: {}", e);
-            std::process::exit(1);
-        },
-    };
-
-    // TODO use fasteval for search conditions, and pass them via CLI
+    let cipher = deserialise_cipher(&args.cipher, &args.config)?;
 
     let worker_total = if args.sequential {
         1u32
@@ -148,8 +147,9 @@ fn main() {
         let log_semaphore = log_semaphore.clone();
         let context = cipher.create_context_parallel(messages.clone(), worker_id, worker_total);
         keys_total += context.get_total_keys();
+        let cond_expr_str = args.condition.clone();
         task_list.add_async(move || {
-            search_task(worker_id, context, log_semaphore);
+            search_task(worker_id, context, UserCondition::new(&cond_expr_str).unwrap(), log_semaphore);
         });
     }
 
@@ -157,9 +157,10 @@ fn main() {
     keys_total += context.get_total_keys();
     preamble(context.get_ciphertexts(), keys_total);
 
-    search_task(0, context, log_semaphore);
+    search_task(0, context, cond, log_semaphore);
 
     task_list.wait();
 
     println!("All workers done");
+    Ok(())
 }
