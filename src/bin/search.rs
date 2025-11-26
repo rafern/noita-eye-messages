@@ -31,10 +31,12 @@ fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, cond: &UserCondition, 
     if !cond.eval_condition(&mut |name:&str, args:Vec<f64>| -> Option<f64> {
         match name {
             "pt" => {
-                let m: usize = (*args.get(0)?) as usize;
+                if args.len() < 2 { return None }
+
+                let m = args[0] as usize;
                 if m > decrypt_ctx.get_plaintext_count() { return None }
 
-                let u: usize = (*args.get(1)?) as usize;
+                let u = args[1] as usize;
                 if u > decrypt_ctx.get_plaintext_len(m) { return None }
 
                 Some(decrypt_ctx.decrypt(m, u) as f64)
