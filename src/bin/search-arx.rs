@@ -1,6 +1,6 @@
 use clap::Parser;
-use noita_eye_messages::ciphers::arx::ARXCipher;
 use noita_eye_messages::ciphers::base::{Cipher, CipherContext, CipherDecryptionContext};
+use noita_eye_messages::ciphers::deserialise_cipher;
 use std::time::Instant;
 use noita_eye_messages::critical_section;
 use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore};
@@ -9,13 +9,14 @@ use noita_eye_messages::utils::print::{print_message, format_big_num, MessagePri
 use noita_eye_messages::utils::compare::{char_num, is_alphanum, is_ord, is_alpha, is_upper_alpha, is_lower_alpha, is_upper_atoi, is_lower_atoi, is_num};
 use noita_eye_messages::data::csv_import::import_csv_messages_or_exit;
 
-// TODO: use fasteval for search conditions, and pass them via CLI
-// TODO: generalise the search command; have a generic cipher API and generic key permutation logic
-
 #[derive(Parser)]
 struct Args {
     /// Path to CSV file containing message data
     data_path: std::path::PathBuf,
+    /// Cipher to use
+    cipher: String,
+    /// Cipher configuration. Format is cipher-specific, but generally expected to be Rusty Object Notation. It's recommended to add this as the last argument after a "--"
+    config: Option<String>,
     /// Disable parallelism (search messages using only the main thread)
     #[arg(short, long)]
     sequential: bool,
@@ -54,7 +55,7 @@ fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, log_semaphore: &Semaph
     });
 }
 
-fn preamble(cipher: &ARXCipher, messages: &MessageList, keys_total: u64) {
+fn preamble(cipher: &(impl Cipher + std::fmt::Debug), messages: &MessageList, keys_total: u64) {
     let mut working_messages: MessageList = messages.clone();
 
     println!("Searching {} keys with cipher {:?}. Ciphertexts (mod_add 32):", keys_total, cipher);
@@ -110,13 +111,22 @@ fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, log_semaphore: Semap
 
 fn main() {
     let args = Args::parse();
+
     let messages = import_csv_messages_or_exit(&args.data_path);
     if messages.len() == 0 {
-        println!("Nothing to do; need at least one message");
-        return;
+        eprintln!("Nothing to do; need at least one message");
+        std::process::exit(1);
     }
 
-    let cipher = ARXCipher::new();
+    let cipher = match deserialise_cipher(&args.cipher, &args.config) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("Cipher setup failed: {}", e);
+            std::process::exit(1);
+        },
+    };
+
+    // TODO use fasteval for search conditions, and pass them via CLI
 
     let mut keys_total: u64 = 0;
 

@@ -7,7 +7,7 @@
 
 use crate::{data::message::{Message, MessageList}, utils::{stackvec::StackVec, threading::get_worker_slice}};
 
-use super::base::{Cipher, CipherContext, CipherDecryptionContext};
+use super::base::{Cipher, CipherContext, CipherDecryptionContext, StandardCipherError};
 
 macro_rules! permute_round_parameter {
     ($param:expr, $range_max:expr, $callback:block) => {
@@ -169,11 +169,14 @@ impl CipherContext for ARXCipherContext {
 }
 
 #[derive(Debug)]
-pub struct ARXCipher { }
+pub struct ARXCipher {}
 
 impl ARXCipher {
-    pub fn new() -> Self {
-        ARXCipher {}
+    pub fn new(config: &Option<String>) -> Result<ARXCipher, Box<dyn std::error::Error>> {
+        match config {
+            Some(_) => Err(StandardCipherError::NotConfigurable.into()),
+            None => Ok(ARXCipher {}.into()),
+        }
     }
 }
 
