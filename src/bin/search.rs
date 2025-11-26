@@ -28,7 +28,7 @@ struct Args {
 const KPS_PRINT_MASK: u32 = 0xffffff;
 
 fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, cond: &UserCondition, log_semaphore: &Semaphore) {
-    let mut val_cb = |name:&str, args:Vec<f64>| -> Option<f64> {
+    if !cond.eval_condition(&mut |name:&str, args:Vec<f64>| -> Option<f64> {
         match name {
             "pt" => {
                 let m: usize = (*args.get(0)?) as usize;
@@ -41,9 +41,7 @@ fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, cond: &UserCondition, 
             },
             _ => None,
         }
-    };
-
-    if !cond.eval_condition(&mut val_cb).unwrap() { return }
+    }).unwrap() { return }
 
     critical_section!(log_semaphore, {
         println!("match with key {}:", decrypt_ctx.serialize_key());
