@@ -1,3 +1,5 @@
+use rug::{Integer, ops::Pow};
+
 /**
  * WARNING:
  * As Lymm stated on Discord, this is equivalent to a homophonic substitution
@@ -22,7 +24,7 @@ macro_rules! permute_round {
     ($round:expr, $callback:block) => {
         permute_round_parameter!($round.add, 255, {
             permute_round_parameter!($round.xor, 255, {
-                permute_round_parameter!($round.rotate, 7, {
+                permute_round_parameter!($round.rot, 7, {
                     $callback
                 });
             });
@@ -30,14 +32,13 @@ macro_rules! permute_round {
     };
 }
 
-const ARX_ORDER: i32 = 1; // ARX, RAX, XAR, AXR, RXA, XRA
-pub const ARX_ROUND_COUNT: usize = 2;
+const ARX_ROUND_COUNT: usize = 2;
 
 #[derive(Debug)]
 #[derive(Default)]
 struct ARXRound {
     /** range: 0-7. u32 instead of u8 for performance reasons */
-    pub rotate: u32,
+    pub rot: u32,
     /** range: 0-255 */
     pub add: u8,
     /** range: 0-255 */
@@ -50,42 +51,6 @@ struct ARXKey {
     pub rounds: [ARXRound; ARX_ROUND_COUNT],
 }
 
-fn apply_arx_round(in_byte: u8, round: &ARXRound) -> u8 {
-    let mut byte: u8 = in_byte;
-    match ARX_ORDER {
-        0 => {
-            byte = byte.rotate_right(round.rotate);
-            byte = byte.wrapping_add(round.add);
-            byte ^ round.xor
-        },
-        1 => {
-            byte = byte.wrapping_add(round.add);
-            byte = byte.rotate_right(round.rotate);
-            byte ^ round.xor
-        },
-        2 => {
-            byte ^= round.xor;
-            byte = byte.rotate_right(round.rotate);
-            byte.wrapping_add(round.add)
-        },
-        3 => {
-            byte = byte.rotate_right(round.rotate);
-            byte ^= round.xor;
-            byte.wrapping_add(round.add)
-        },
-        4 => {
-            byte = byte.wrapping_add(round.add);
-            byte ^= round.xor;
-            byte.rotate_right(round.rotate)
-        },
-        _ => {
-            byte ^= round.xor;
-            byte = byte.wrapping_add(round.add);
-            byte.rotate_right(round.rotate)
-        }
-    }
-}
-
 pub struct ARXCipherDecryptContext<'a> {
     key: ARXKey,
     ctx: &'a ARXCipherContext,
@@ -96,7 +61,7 @@ impl<'a> CipherDecryptionContext<'a> for ARXCipherDecryptContext<'a> {
         let mut byte = self.ctx.ciphertexts[message_index].data[unit_index];
 
         for round in &self.key.rounds {
-            byte = apply_arx_round(byte, round);
+            byte = byte.wrapping_add(round.add).rotate_right(round.rot) ^ round.xor;
         }
 
         byte
@@ -138,8 +103,10 @@ pub struct ARXCipherContext {
 }
 
 impl CipherContext for ARXCipherContext {
-    fn get_total_keys(&self) -> u64 {
-        ((self.a_max - self.a_min) as u64 + 1) * 2048 * (524288u64.pow(ARX_ROUND_COUNT as u32 - 1))
+    fn get_total_keys(&self) -> Integer {
+        let mut total = Integer::from(((self.a_max - self.a_min) as u64 + 1) * 2048);
+        total *= Integer::from(524288).pow(ARX_ROUND_COUNT as u32 - 1);
+        total
     }
 
     fn get_ciphertexts(&self) -> &MessageList {
@@ -158,7 +125,7 @@ impl CipherContext for ARXCipherContext {
             for r0x in 0..=255 {
                 decrypt_ctx.key.rounds[0].xor = r0x;
                 for r0r in 0..=7 {
-                    decrypt_ctx.key.rounds[0].rotate = r0r;
+                    decrypt_ctx.key.rounds[0].rot = r0r;
                     permute_round!(decrypt_ctx.key.rounds[1], {
                         if !callback(&mut decrypt_ctx) { return }
                     });

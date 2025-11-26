@@ -1,11 +1,12 @@
 use clap::Parser;
 use noita_eye_messages::ciphers::base::{Cipher, CipherContext, CipherDecryptionContext};
 use noita_eye_messages::ciphers::deserialise_cipher;
+use rug::Integer;
 use std::time::Instant;
 use noita_eye_messages::critical_section;
-use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore};
+use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore, get_parallelism};
 use noita_eye_messages::data::message::MessageList;
-use noita_eye_messages::utils::print::{print_message, format_big_num, MessagePrintConfig};
+use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, print_message};
 use noita_eye_messages::utils::compare::{char_num, is_alphanum, is_ord, is_alpha, is_upper_alpha, is_lower_alpha, is_upper_atoi, is_lower_atoi, is_num};
 use noita_eye_messages::data::csv_import::import_csv_messages_or_exit;
 
@@ -22,7 +23,7 @@ struct Args {
     sequential: bool,
 }
 
-const KPS_PRINT_MASK: u64 = 0xffffff;
+const KPS_PRINT_MASK: u32 = 0xffffff;
 
 fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, log_semaphore: &Semaphore) {
     // first message special case. put conditions for repeated sections here
@@ -55,10 +56,10 @@ fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, log_semaphore: &Semaph
     });
 }
 
-fn preamble(cipher: &(impl Cipher + std::fmt::Debug), messages: &MessageList, keys_total: u64) {
+fn preamble(messages: &MessageList, keys_total: Integer) {
     let mut working_messages: MessageList = messages.clone();
 
-    println!("Searching {} keys with cipher {:?}. Ciphertexts (mod_add 32):", keys_total, cipher);
+    println!("Searching {} keys. Ciphertexts (mod_add 32):", keys_total);
 
     for m in 0..working_messages.len() {
         let msg = &mut working_messages[m];
@@ -73,26 +74,30 @@ fn preamble(cipher: &(impl Cipher + std::fmt::Debug), messages: &MessageList, ke
 }
 
 fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, log_semaphore: Semaphore) {
-    let mut keys_checked: u64 = 0;
+    let mut keys_checked = Integer::new();
+    let mut keys_checked_accum: u32 = 0;
     let mut last_print = Instant::now();
     let mut kps_accum_skips = 0;
 
-    // TODO use bigint, as total key count might get ridiculous
-    let worker_keys_total = ctx.get_total_keys() as f64;
+    let worker_keys_total = ctx.get_total_keys();
 
     ctx.permute_keys(&mut |decrypt_ctx| {
         try_key(decrypt_ctx, &log_semaphore);
 
-        keys_checked += 1;
+        keys_checked_accum += 1;
         // XXX this makes the last round *look* like it's not changing in the
         //     "last key checked" log, but it actually is. don't remove this
         //     check though, otherwise it dramatically slows everything down
-        if keys_checked & KPS_PRINT_MASK == 0 {
+        if keys_checked_accum == KPS_PRINT_MASK {
+            keys_checked += keys_checked_accum;
+            keys_checked_accum = 0;
+
             let now = Instant::now();
             let secs_since_last = now.duration_since(last_print).as_secs_f64();
             if secs_since_last >= 1f64 {
                 critical_section!(log_semaphore, {
-                    println!("[worker {}] {:.2}% checked ({}/{} keys, {} keys/sec). last key: {}", worker_id, (keys_checked as f64 / worker_keys_total) * 100f64, format_big_num(keys_checked as f64), format_big_num(worker_keys_total), format_big_num((KPS_PRINT_MASK * (kps_accum_skips + 1)) as f64 / secs_since_last), decrypt_ctx.serialize_key());
+                    let percent = TryInto::<u32>::try_into((&keys_checked * Integer::from(10000)) / &worker_keys_total).unwrap() as f32 / 100.0;
+                    println!("[worker {worker_id}] {percent:.2}% checked ({}/{} keys, {} keys/sec). last key: {}", format_big_uint(&keys_checked), format_big_uint(&worker_keys_total), format_big_float((KPS_PRINT_MASK * (kps_accum_skips + 1)) as f64 / secs_since_last), decrypt_ctx.serialize_key());
                 });
                 last_print = now;
                 kps_accum_skips = 0;
@@ -128,17 +133,16 @@ fn main() {
 
     // TODO use fasteval for search conditions, and pass them via CLI
 
-    let mut keys_total: u64 = 0;
-
     let worker_total = if args.sequential {
         1u32
     } else {
-        (std::thread::available_parallelism().unwrap_or(unsafe { std::num::NonZero::new_unchecked(1) }).get() as u32).min(cipher.get_max_parallelism())
+        get_parallelism().min(cipher.get_max_parallelism())
     };
 
     println!("Using {} workers", worker_total);
     let log_semaphore = Semaphore::new();
     let mut task_list = AsyncTaskList::new();
+    let mut keys_total = Integer::new();
 
     for worker_id in 1..worker_total {
         let log_semaphore = log_semaphore.clone();
@@ -151,7 +155,7 @@ fn main() {
 
     let context = cipher.create_context_parallel(messages, 0, worker_total);
     keys_total += context.get_total_keys();
-    preamble(&cipher, context.get_ciphertexts(), keys_total);
+    preamble(context.get_ciphertexts(), keys_total);
 
     search_task(0, context, log_semaphore);
 

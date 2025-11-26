@@ -1,5 +1,6 @@
 use crate::data::message::Message;
 use colored::Colorize;
+use rug::Integer;
 
 #[derive(Default)]
 pub struct MessagePrintConfig {
@@ -7,13 +8,33 @@ pub struct MessagePrintConfig {
     pub multiview: bool,
 }
 
-pub fn format_big_num(x: f64) -> String {
+pub fn format_big_float(x: f64) -> String {
     if x >= 1_000_000_000_000f64 {
         format!("{:.2}T", x / 1_000_000_000_000f64)
     } else if x >= 1_000_000_000f64 {
         format!("{:.2}B", x / 1_000_000_000f64)
     } else if x >= 1_000_000f64 {
         format!("{:.2}M", x / 1_000_000f64)
+    } else {
+        format!("{}", x)
+    }
+}
+
+/**
+ * Format big integer as a fixed-point number with 2 decimal places
+ */
+fn format_big_num_fp2(x: Integer) -> String {
+    let (div, rem) = x.div_rem_euc(Integer::from(100));
+    format!("{}.{:02}", div, rem)
+}
+
+pub fn format_big_uint(x: &Integer) -> String {
+    if *x >= Integer::from(1_000_000_000_000u64) {
+        format!("{}T", format_big_num_fp2(x / Integer::from(1_000_000_000_0u64)))
+    } else if *x >= Integer::from(1_000_000_000) {
+        format!("{}B", format_big_num_fp2(x / Integer::from(1_000_000_0)))
+    } else if *x >= Integer::from(1_000_000) {
+        format!("{}M", format_big_num_fp2(x / Integer::from(1_000_0)))
     } else {
         format!("{}", x)
     }

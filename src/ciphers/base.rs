@@ -1,5 +1,7 @@
 use std::fmt::{self, Debug};
 use std::error::Error;
+use rug::Integer;
+
 use crate::data::message::{Message, MessageList};
 
 #[derive(Debug)]
@@ -28,7 +30,7 @@ pub trait CipherDecryptionContext<'a> {
 }
 
 pub trait CipherContext: Send {
-    fn get_total_keys(&self) -> u64;
+    fn get_total_keys(&self) -> Integer;
     fn get_ciphertexts(&self) -> &MessageList;
     fn permute_keys<'a>(&'a self, callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>) -> bool);
 }
@@ -39,7 +41,7 @@ pub trait CipherContext: Send {
  *      know that the new cipher exists (unless this is exactly what you want
  *      for weird reasons)
  */
-pub trait Cipher: Debug {
+pub trait Cipher {
     fn get_max_parallelism(&self) -> u32;
     fn create_context_parallel(&self, ciphertexts: MessageList, worker_id: u32, worker_total: u32) -> Box<dyn CipherContext>;
 
