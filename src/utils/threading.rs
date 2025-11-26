@@ -3,8 +3,10 @@ use std::{sync::{Arc, Mutex, MutexGuard}, thread::{Builder, JoinHandle, availabl
 #[macro_export]
 macro_rules! critical_section {
     ($semaphore:expr, $callback:block) => {
-        let _guard = $semaphore.lock();
-        $callback
+        let guard = $semaphore.lock();
+        let x = $callback;
+        drop(guard);
+        x
     };
 }
 
