@@ -103,7 +103,7 @@ impl CipherContext for ARXCipherContext {
         &self.ciphertexts
     }
 
-    fn permute_keys<'a>(&'a self, callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>) -> bool) {
+    fn permute_keys<'a>(&'a self, callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>)) {
         let mut decrypt_ctx = ARXCipherDecryptContext {
             key: ARXKey::default(),
             ctx: &self,
@@ -117,8 +117,31 @@ impl CipherContext for ARXCipherContext {
                 for r0r in 0..=7 {
                     decrypt_ctx.key.rounds[0].rot = r0r;
                     permute_round!(decrypt_ctx.key.rounds[1], {
-                        if !callback(&mut decrypt_ctx) { return }
+                        callback(&mut decrypt_ctx);
                     });
+                }
+            }
+        }
+    }
+
+    fn permute_keys_interruptible<'a>(&'a self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>, u32) -> bool) {
+        let mut decrypt_ctx = ARXCipherDecryptContext {
+            key: ARXKey::default(),
+            ctx: &self,
+        };
+
+        // TODO (or don't idc anymore) - make this react to round count changes
+        for r0a in self.a_min..=self.a_max {
+            decrypt_ctx.key.rounds[0].add = r0a;
+            for r0x in 0..=255 {
+                decrypt_ctx.key.rounds[0].xor = r0x;
+                for r0r in 0..=7 {
+                    decrypt_ctx.key.rounds[0].rot = r0r;
+                    permute_round!(decrypt_ctx.key.rounds[1], {
+                        key_callback(&mut decrypt_ctx);
+                    });
+
+                    if !occasional_callback(&mut decrypt_ctx, 524288) { return }
                 }
             }
         }

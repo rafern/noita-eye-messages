@@ -4,6 +4,8 @@ use crate::analysis::freq::UnitFrequency;
 
 use super::message::{MAX_MESSAGE_COUNT, MAX_MESSAGE_SIZE, Message, MessageList};
 
+// TODO support CSV comments via csv crate
+
 #[derive(Debug)]
 pub enum InvalidFormatErrorKind {
     EmptyMessageName,

@@ -5,9 +5,10 @@ use noita_eye_messages::ciphers::deserialise_cipher;
 use noita_eye_messages::utils::user_condition::UserCondition;
 use rug::{Integer, Rational};
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use noita_eye_messages::{cached_var, critical_section};
-use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore, get_parallelism};
+use noita_eye_messages::utils::threading::{Semaphore, get_parallelism};
 use noita_eye_messages::data::message::MessageList;
 use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, format_seconds, print_message};
 use noita_eye_messages::data::csv_import::{import_csv_languages_or_exit, import_csv_messages_or_exit};
@@ -35,50 +36,7 @@ struct Args {
 
 // TODO output matched keys to file
 // TODO suspend to/resume from file
-
-const KPS_PRINT_MASK: u32 = 0xfffff;
-
-fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, cond: &UserCondition, languages: &Vec<UnitFrequency>, log_semaphore: &Semaphore) {
-    let mut pt_freq_dist: Option<UnitFrequency> = None;
-
-    if !cond.eval_condition(&mut |name:&str, args:Vec<f64>| -> Option<f64> {
-        match name {
-            "pt" => {
-                if args.len() < 2 { return None }
-
-                let m = args[0] as usize;
-                if m > decrypt_ctx.get_plaintext_count() { return None }
-
-                let u = args[1] as usize;
-                if u > decrypt_ctx.get_plaintext_len(m) { return None }
-
-                Some(decrypt_ctx.decrypt(m, u) as f64)
-            },
-            "pt_freq_dist_error" => {
-                if args.len() < 1 { return None }
-
-                let l = args[0] as usize;
-                if l >= languages.len() { return None }
-
-                Some(languages[l].get_error(cached_var!(pt_freq_dist, {
-                    UnitFrequency::from_messages(&decrypt_ctx.get_all_plaintexts())
-                })))
-            },
-            _ => None,
-        }
-    }).unwrap() { return }
-
-    critical_section!(log_semaphore, {
-        println!("match with key {}:", decrypt_ctx.serialize_key());
-
-        for m in 0..decrypt_ctx.get_plaintext_count() {
-            print_message(&decrypt_ctx.get_plaintext(m), MessagePrintConfig {
-                multiview: true,
-                max_len: 8,
-            });
-        }
-    });
-}
+// TODO generic efficient message passing so that tasks can be interrupted without destroying performance/other message passing can be done, like performance metrics
 
 fn preamble(messages: &MessageList, worker_total: u32, keys_total: &Integer) {
     let mut working_messages: MessageList = messages.clone();
@@ -97,42 +55,78 @@ fn preamble(messages: &MessageList, worker_total: u32, keys_total: &Integer) {
     println!();
 }
 
-fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: UserCondition, languages: Vec<UnitFrequency>, log_semaphore: Semaphore) {
+fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: UserCondition, languages: Vec<UnitFrequency>, log_semaphore: Semaphore, has_message: &AtomicBool) {
     let mut keys_checked = Integer::new();
-    let mut keys_checked_accum: u32 = 0;
-    let mut kps_accum_skips = 0;
+    let mut keys_checked_since_last_print = Integer::new();
     let worker_keys_total = ctx.get_total_keys();
     let start_time = Instant::now();
     let mut last_print = start_time.clone();
 
-    ctx.permute_keys(&mut |decrypt_ctx| {
-        try_key(decrypt_ctx, &cond, &languages, &log_semaphore);
+    ctx.permute_keys_interruptible(&mut |decrypt_ctx| {
+        let mut pt_freq_dist: Option<UnitFrequency> = None;
 
-        keys_checked_accum += 1;
-        // XXX this makes the last round *look* like it's not changing in the
-        //     "last key checked" log, but it actually is. don't remove this
-        //     check though, otherwise it dramatically slows everything down
-        if keys_checked_accum == KPS_PRINT_MASK {
-            keys_checked += keys_checked_accum;
-            keys_checked_accum = 0;
+        if !cond.eval_condition(&mut |name:&str, args:Vec<f64>| -> Option<f64> {
+            match name {
+                "pt" => {
+                    if args.len() < 2 { return None }
 
-            let now = Instant::now();
-            let secs_since_last = now.duration_since(last_print).as_secs_f64();
-            if secs_since_last >= 15f64 {
-                let secs_since_start = now.duration_since(start_time).as_secs_f64();
+                    let m = args[0] as usize;
+                    if m > decrypt_ctx.get_plaintext_count() { return None }
 
-                let percent = Rational::from(((&keys_checked * 100), &worker_keys_total)).to_f32();
-                let kps = (KPS_PRINT_MASK * Integer::from(kps_accum_skips + 1)).to_f64() / secs_since_last;
-                let secs_left = Rational::from((&worker_keys_total - &keys_checked, &keys_checked)).to_f64() * secs_since_start;
+                    let u = args[1] as usize;
+                    if u > decrypt_ctx.get_plaintext_len(m) { return None }
 
-                critical_section!(log_semaphore, {
-                    println!("[worker {worker_id}] {percent:.2}% checked ({}/{} keys, {} keys/sec, {} left). last key: {}", format_big_uint(&keys_checked), format_big_uint(&worker_keys_total), format_big_float(kps), format_seconds(secs_left), decrypt_ctx.serialize_key());
-                });
-                last_print = now;
-                kps_accum_skips = 0;
-            } else {
-                kps_accum_skips += 1;
+                    Some(decrypt_ctx.decrypt(m, u) as f64)
+                },
+                "pt_freq_dist_error" => {
+                    if args.len() < 1 { return None }
+
+                    let l = args[0] as usize;
+                    if l >= languages.len() { return None }
+
+                    Some(languages[l].get_error(cached_var!(pt_freq_dist, {
+                        UnitFrequency::from_messages(&decrypt_ctx.get_all_plaintexts())
+                    })))
+                },
+                _ => None,
             }
+        }).unwrap() { return }
+
+        critical_section!(log_semaphore, {
+            println!("match with key {}:", decrypt_ctx.serialize_key());
+
+            for m in 0..decrypt_ctx.get_plaintext_count() {
+                print_message(&decrypt_ctx.get_plaintext(m), MessagePrintConfig {
+                    multiview: true,
+                    max_len: 8,
+                });
+            }
+        });
+    }, &mut |decrypt_ctx, delta_keys_checked| {
+        keys_checked_since_last_print += delta_keys_checked;
+
+        let now = Instant::now();
+        let secs_since_last = now.duration_since(last_print).as_secs_f64();
+        if secs_since_last >= 1f64 {
+            keys_checked += &keys_checked_since_last_print;
+            let secs_since_start = now.duration_since(start_time).as_secs_f64();
+
+            let percent = Rational::from(((&keys_checked * 100), &worker_keys_total)).to_f32();
+            let kps = (keys_checked_since_last_print).to_f64() / secs_since_last;
+            let secs_left = Rational::from((&worker_keys_total - &keys_checked, &keys_checked)).to_f64() * secs_since_start;
+
+            critical_section!(log_semaphore, {
+                println!("[worker {worker_id}] {percent:.2}% checked ({}/{} keys, {} keys/sec, {} left). last key: {}", format_big_uint(&keys_checked), format_big_uint(&worker_keys_total), format_big_float(kps), format_seconds(secs_left), decrypt_ctx.serialize_key());
+            });
+
+            last_print = now;
+            keys_checked_since_last_print = Integer::new();
+        }
+
+        if has_message.load(Ordering::Relaxed) {
+            critical_section!(log_semaphore, {
+                println!("[worker {worker_id}] had a message");
+            });
         }
 
         true
@@ -149,7 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // XXX this won't be cloned for other threads, because fasteval doesn't
     //     support it :/. it's still helpful to do this early so that it fails
     //     fast, but the condition has to be re-parsed for each thread
-    let cond = UserCondition::new(&args.condition)?;
+    let _cond = UserCondition::new(&args.condition)?;
 
     let languages = import_csv_languages_or_exit(&args.language);
 
@@ -170,28 +164,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         get_parallelism().min(max_parallelism)
     };
 
-    let log_semaphore = Semaphore::new();
-    let mut task_list = AsyncTaskList::new();
-    let mut keys_total = Integer::new();
+    std::thread::scope(|scope| {
+        let log_semaphore = Semaphore::new();
+        let mut keys_total = Integer::new();
 
-    for worker_id in 1..worker_total {
-        let log_semaphore = log_semaphore.clone();
-        let context = cipher.create_context_parallel(messages.clone(), worker_id, worker_total);
-        keys_total += context.get_total_keys();
-        let cond_expr_str = args.condition.clone();
-        let languages = languages.clone();
-        task_list.add_async(move || {
-            search_task(worker_id, context, UserCondition::new(&cond_expr_str).unwrap(), languages, log_semaphore);
-        });
-    }
+        for worker_id in 0..worker_total {
+            let has_message = AtomicBool::new(false);
+            let log_semaphore = log_semaphore.clone();
+            let context = cipher.create_context_parallel(messages.clone(), worker_id, worker_total);
+            keys_total += context.get_total_keys();
+            let cond_expr_str = args.condition.clone();
+            let languages = languages.clone();
 
-    let context = cipher.create_context_parallel(messages, 0, worker_total);
-    keys_total += context.get_total_keys();
-    preamble(context.get_ciphertexts(), worker_total, &keys_total);
+            scope.spawn(move || {
+                search_task(worker_id, context, UserCondition::new(&cond_expr_str).unwrap(), languages, log_semaphore, &has_message);
+            });
+        }
 
-    search_task(0, context, cond, languages, log_semaphore);
-
-    task_list.wait();
+        preamble(&messages, worker_total, &keys_total);
+    });
 
     println!("All workers done");
     Ok(())
