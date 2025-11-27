@@ -1,4 +1,6 @@
-use std::{sync::{Arc, Mutex, MutexGuard}, thread::{Builder, JoinHandle, available_parallelism, spawn}};
+use std::{sync::{Arc, Mutex, MutexGuard}, thread::{Builder, JoinHandle, spawn}};
+
+use core_affinity::CoreId;
 
 #[macro_export]
 macro_rules! critical_section {
@@ -75,6 +77,15 @@ pub fn get_worker_slice<T>(max_value: T, worker_id: u32, worker_total: u32) -> (
     (T::try_from(min).unwrap(), T::try_from(max - 1).unwrap())
 }
 
-pub fn get_parallelism() -> u32 {
-    available_parallelism().unwrap_or(unsafe { std::num::NonZero::new_unchecked(1) }).get() as u32
+pub fn get_cores(max_parallelism: u32) -> Option<Vec<CoreId>> {
+    let mut core_ids = core_affinity::get_core_ids()?;
+    if core_ids.len() == 0 { return None };
+    core_ids.truncate(max_parallelism as usize);
+    Some(core_ids)
+}
+
+pub fn try_pinning_core(worker_id: u32, core: CoreId) {
+    if !core_affinity::set_for_current(core) {
+        println!("Could not pin worker {} to core {}", worker_id, core.id);
+    }
 }

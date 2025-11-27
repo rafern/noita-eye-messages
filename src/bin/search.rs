@@ -7,7 +7,7 @@ use rug::{Integer, Rational};
 use std::num::NonZeroU32;
 use std::time::Instant;
 use noita_eye_messages::{cached_var, critical_section};
-use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore, get_parallelism};
+use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore, get_cores, try_pinning_core};
 use noita_eye_messages::data::message::MessageList;
 use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, format_seconds, print_message};
 use noita_eye_messages::data::csv_import::{import_csv_languages_or_exit, import_csv_messages_or_exit};
@@ -118,7 +118,7 @@ fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: UserCondition,
 
             let now = Instant::now();
             let secs_since_last = now.duration_since(last_print).as_secs_f64();
-            if secs_since_last >= 15f64 {
+            if secs_since_last >= 1f64 {
                 let secs_since_start = now.duration_since(start_time).as_secs_f64();
 
                 let percent = Rational::from(((&keys_checked * 100), &worker_keys_total)).to_f32();
@@ -162,28 +162,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cipher = deserialise_cipher(&args.cipher, &args.config)?;
 
-    let worker_total = if args.sequential {
+    let max_parallelism = if args.sequential {
         1u32
     } else {
-        let mut max_parallelism: u32 = args.max_parallelism.unwrap_or(unsafe { NonZeroU32::new_unchecked(u32::MAX) }).into();
-        max_parallelism = max_parallelism.min(cipher.get_max_parallelism());
-        get_parallelism().min(max_parallelism)
+        cipher.get_max_parallelism().min(args.max_parallelism.unwrap_or(unsafe { NonZeroU32::new_unchecked(u32::MAX) }).into())
     };
 
     let log_semaphore = Semaphore::new();
     let mut task_list = AsyncTaskList::new();
     let mut keys_total = Integer::new();
 
-    for worker_id in 1..worker_total {
-        let log_semaphore = log_semaphore.clone();
-        let context = cipher.create_context_parallel(messages.clone(), worker_id, worker_total);
-        keys_total += context.get_total_keys();
-        let cond_expr_str = args.condition.clone();
-        let languages = languages.clone();
-        task_list.add_async(move || {
-            search_task(worker_id, context, UserCondition::new(&cond_expr_str).unwrap(), languages, log_semaphore);
-        });
-    }
+    let worker_total = match get_cores(max_parallelism) {
+        Some(core_ids) => {
+            let worker_total = core_ids.len() as u32;
+
+            for worker_id in 1..worker_total {
+                let log_semaphore = log_semaphore.clone();
+                let context = cipher.create_context_parallel(messages.clone(), worker_id, worker_total);
+                keys_total += context.get_total_keys();
+                let cond_expr_str = args.condition.clone();
+                let languages = languages.clone();
+                let core_id = core_ids[worker_id as usize];
+                task_list.add_async(move || {
+                    try_pinning_core(worker_id, core_id);
+                    search_task(worker_id, context, UserCondition::new(&cond_expr_str).unwrap(), languages, log_semaphore);
+                });
+            }
+
+            try_pinning_core(0, core_ids[0]);
+            worker_total
+        },
+        None => {
+            println!("Core info not available, falling back to single unpinned thread");
+            1u32
+        },
+    };
 
     let context = cipher.create_context_parallel(messages, 0, worker_total);
     keys_total += context.get_total_keys();

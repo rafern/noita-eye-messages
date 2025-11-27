@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.53", features = ["derive"] }
 colored = "3.0.0"
+core_affinity = "0.8.3"
 dataviz = "0.1.9"
 fasteval = "0.2.4"
 fontconfig = "0.10.0"
