@@ -65,6 +65,26 @@ fn preamble(messages: &MessageList, worker_total: u32, keys_total: &Integer) {
     println!();
 }
 
+fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64, keys_total: &Integer, keys_checked: &Integer, keys_checked_since_last_print: &Integer, log_semaphore: &Semaphore) {
+    let percent = Rational::from((&*keys_checked * 100, &*keys_total)).to_f32();
+    let kps = keys_checked_since_last_print.to_f64() / secs_since_last;
+    let print_begin = format!("Progress: {percent:.2}% checked ({}/{} keys), {} keys/sec", format_big_uint(&keys_checked), format_big_uint(&keys_total), format_big_float(kps));
+
+    match time_range {
+        Some((start_time, now)) => {
+            let secs_left = Rational::from((&*keys_total - &*keys_checked, &*keys_checked)).to_f64() * now.duration_since(*start_time).as_secs_f64();
+            critical_section!(log_semaphore, {
+                println!("{} ({})", print_begin, format_seconds_left(secs_left));
+            });
+        },
+        None => {
+            critical_section!(log_semaphore, {
+                println!("{}", print_begin);
+            });
+        }
+    }
+}
+
 fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: &UserCondition, languages: &Vec<UnitFrequency>, log_semaphore: &Semaphore, tx: SyncSender<TaskPacket>) {
     ctx.permute_keys_interruptible(&mut |decrypt_ctx| {
         let mut pt_freq_dist: Option<UnitFrequency> = None;
@@ -97,7 +117,7 @@ fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: &UserCondition
         }).unwrap() { return }
 
         critical_section!(log_semaphore, {
-            println!("match with key {}:", decrypt_ctx.serialize_key());
+            println!("Match with key {}:", decrypt_ctx.serialize_key());
 
             for m in 0..decrypt_ctx.get_plaintext_count() {
                 print_message(&decrypt_ctx.get_plaintext(m), MessagePrintConfig {
@@ -184,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         TaskPacket::Finished { worker_id } => {
                             workers_waiting -= 1;
                             critical_section!(log_semaphore, {
-                                println!("worker {worker_id} finished task");
+                                println!("Worker {worker_id} finished task");
                             });
                         },
                         TaskPacket::Progress { keys } => {
@@ -197,7 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         RecvTimeoutError::Timeout => { /* do nothing */ },
                         RecvTimeoutError::Disconnected => {
                             critical_section!(log_semaphore, {
-                                println!("worker channel disconnected (thread died?)");
+                                println!("Worker channel disconnected (thread died?)");
                             });
 
                             return Err(err)?;
@@ -210,22 +230,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let secs_since_last = now.duration_since(last_print).as_secs_f64();
             if secs_since_last >= 5f64 {
                 keys_checked += &keys_checked_since_last_print;
-                let secs_since_start = now.duration_since(start_time).as_secs_f64();
 
-                let percent = Rational::from(((&keys_checked * 100), &keys_total)).to_f32();
-                let kps = keys_checked_since_last_print.to_f64() / secs_since_last;
-                let secs_left = Rational::from((&keys_total - &keys_checked, &keys_checked)).to_f64() * secs_since_start;
-
-                critical_section!(log_semaphore, {
-                    println!("{percent:.2}% checked ({}/{} keys, {} keys/sec, {})", format_big_uint(&keys_checked), format_big_uint(&keys_total), format_big_float(kps), format_seconds_left(secs_left));
-                });
+                print_progress(
+                    Some((&start_time, &now)),
+                    secs_since_last,
+                    &keys_total,
+                    &keys_checked,
+                    &keys_checked_since_last_print,
+                    &log_semaphore
+                );
 
                 last_print = now;
                 keys_checked_since_last_print = Integer::new();
             }
         }
 
-        println!("All workers done");
+        keys_checked += &keys_checked_since_last_print;
+
+        print_progress(
+            None,
+            Instant::now().duration_since(last_print).as_secs_f64(),
+            &keys_total,
+            &keys_checked,
+            &keys_checked_since_last_print,
+            &log_semaphore
+        );
+
         Ok(())
     })
 }
