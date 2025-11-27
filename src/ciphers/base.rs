@@ -3,6 +3,7 @@ use std::error::Error;
 use rug::Integer;
 
 use crate::data::message::{Message, MessageList};
+use crate::utils::stackvec::StackVec;
 
 #[derive(Debug)]
 pub enum StandardCipherError {
@@ -22,11 +23,29 @@ impl fmt::Display for StandardCipherError {
 impl Error for StandardCipherError {}
 
 pub trait CipherDecryptionContext<'a> {
-    fn decrypt(&mut self, message_index: usize, unit_index: usize) -> u8;
+    fn serialize_key(&self) -> String;
+    fn get_plaintext_name(&self, message_index: usize) -> String;
     fn get_plaintext_count(&self) -> usize;
     fn get_plaintext_len(&self, message_index: usize) -> usize;
-    fn get_plaintext(&mut self, message_index: usize) -> Message;
-    fn serialize_key(&self) -> String;
+    fn decrypt(&mut self, message_index: usize, unit_index: usize) -> u8;
+
+    fn get_plaintext(&mut self, message_index: usize) -> Message {
+        let mut data = StackVec::default();
+        for i in 0..self.get_plaintext_len(message_index) {
+            data.push(self.decrypt(message_index, i));
+        }
+
+        Message { name: self.get_plaintext_name(message_index), data }
+    }
+
+    fn get_all_plaintexts(&mut self) -> MessageList {
+        let mut messages = MessageList::default();
+        for m in 0..self.get_plaintext_count() {
+            messages.push(self.get_plaintext(m));
+        }
+
+        messages
+    }
 }
 
 pub trait CipherContext: Send {

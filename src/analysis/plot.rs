@@ -129,14 +129,14 @@ pub fn plot<T: Drawer + Hover + Send>(task_list: &mut AsyncTaskList, mut plot: T
     });
 }
 
-pub fn bar_chart(task_list: &mut AsyncTaskList, title: &str, x_label: &str, y_label: &str, data: &UnitTotals) {
+pub fn bar_chart(task_list: &mut AsyncTaskList, title: &str, x_label: &str, y_label: &str, totals: &UnitTotals) {
     let mut dataset = BarDataset::new("Data", hsv_to_rgb(0.0, HSV_SAT, HSV_VAL));
     let mut x_min = usize::MAX;
     let mut x_max = 0;
     let mut y_max = 0;
 
-    for i in 0..data.len() {
-        let v = data[i];
+    for i in 0..totals.data.len() {
+        let v = totals.data[i];
         if v != 0 {
             dataset.add_data(i as f64, v as f64);
             x_min = x_min.min(i);

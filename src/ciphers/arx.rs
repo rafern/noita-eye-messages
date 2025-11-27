@@ -7,7 +7,7 @@ use rug::{Integer, ops::Pow};
  * this to do cryptanalysis
  */
 
-use crate::{data::message::{Message, MessageList}, utils::{stackvec::StackVec, threading::get_worker_slice}};
+use crate::{data::message::MessageList, utils::threading::get_worker_slice};
 
 use super::base::{Cipher, CipherContext, CipherDecryptionContext, StandardCipherError};
 
@@ -57,14 +57,14 @@ pub struct ARXCipherDecryptContext<'a> {
 }
 
 impl<'a> CipherDecryptionContext<'a> for ARXCipherDecryptContext<'a> {
-    fn decrypt(&mut self, message_index: usize, unit_index: usize) -> u8 {
-        let mut byte = self.ctx.ciphertexts[message_index].data[unit_index];
+    fn serialize_key(&self) -> String {
+        // TODO use serde instead, this is temporary. deserialization will be
+        //      supported in the future
+        format!("{:?}", self.key)
+    }
 
-        for round in &self.key.rounds {
-            byte = byte.wrapping_add(round.add).rotate_right(round.rot) ^ round.xor;
-        }
-
-        byte
+    fn get_plaintext_name(&self, message_index: usize) -> String {
+        self.ctx.ciphertexts[message_index].name.clone()
     }
 
     fn get_plaintext_count(&self) -> usize {
@@ -75,24 +75,14 @@ impl<'a> CipherDecryptionContext<'a> for ARXCipherDecryptContext<'a> {
         self.ctx.ciphertexts[message_index].data.len()
     }
 
-    fn get_plaintext(&mut self, message_index: usize) -> Message {
-        let ct = &self.ctx.ciphertexts[message_index];
-        let mut data = StackVec::default();
+    fn decrypt(&mut self, message_index: usize, unit_index: usize) -> u8 {
+        let mut byte = self.ctx.ciphertexts[message_index].data[unit_index];
 
-        for i in 0..ct.data.len() {
-            data.push(self.decrypt(message_index, i));
+        for round in &self.key.rounds {
+            byte = byte.wrapping_add(round.add).rotate_right(round.rot) ^ round.xor;
         }
 
-        Message {
-            name: ct.name.clone(),
-            data,
-        }
-    }
-
-    fn serialize_key(&self) -> String {
-        // TODO use serde instead, this is temporary. deserialization will be
-        //      supported in the future
-        format!("{:?}", self.key)
+        byte
     }
 }
 

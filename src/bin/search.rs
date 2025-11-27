@@ -1,14 +1,16 @@
 use clap::Parser;
+use noita_eye_messages::analysis::freq::UnitFrequency;
 use noita_eye_messages::ciphers::base::{Cipher, CipherContext, CipherDecryptionContext};
 use noita_eye_messages::ciphers::deserialise_cipher;
 use noita_eye_messages::utils::user_condition::UserCondition;
-use rug::Integer;
+use rug::{Integer, Rational};
+use std::num::NonZeroU32;
 use std::time::Instant;
-use noita_eye_messages::critical_section;
+use noita_eye_messages::{cached_var, critical_section};
 use noita_eye_messages::utils::threading::{AsyncTaskList, Semaphore, get_parallelism};
 use noita_eye_messages::data::message::MessageList;
-use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, print_message};
-use noita_eye_messages::data::csv_import::import_csv_messages_or_exit;
+use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, format_seconds, print_message};
+use noita_eye_messages::data::csv_import::{import_csv_languages_or_exit, import_csv_messages_or_exit};
 
 #[derive(clap::Parser)]
 struct Args {
@@ -20,14 +22,25 @@ struct Args {
     cipher: String,
     /// Cipher configuration. Format is cipher-specific, but generally expected to be Rusty Object Notation. It's recommended to add this as the last argument after a "--"
     config: Option<String>,
-    /// Disable parallelism (search messages using only the main thread)
+    /// Disable parallelism (search messages using only the main thread). Equivalent to setting max parallelism to 1, but takes priority over max parallelism
     #[arg(short, long)]
     sequential: bool,
+    /// Maximum number of workers (including main thread). Using all available cores has diminishing returns, so tweaking this value is recommended
+    #[arg(short, long)]
+    max_parallelism: Option<NonZeroU32>,
+    /// Path to CSV file containing a language's letter frequency distribution. Used to register languages. Refer to a language by its index (0-based) in the order specified in the terminal
+    #[clap(short, long)]
+    language: Vec<std::path::PathBuf>,
 }
 
-const KPS_PRINT_MASK: u32 = 0xffffff;
+// TODO output matched keys to file
+// TODO suspend to/resume from file
 
-fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, cond: &UserCondition, log_semaphore: &Semaphore) {
+const KPS_PRINT_MASK: u32 = 0xfffff;
+
+fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, cond: &UserCondition, languages: &Vec<UnitFrequency>, log_semaphore: &Semaphore) {
+    let mut pt_freq_dist: Option<UnitFrequency> = None;
+
     if !cond.eval_condition(&mut |name:&str, args:Vec<f64>| -> Option<f64> {
         match name {
             "pt" => {
@@ -40,6 +53,16 @@ fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, cond: &UserCondition, 
                 if u > decrypt_ctx.get_plaintext_len(m) { return None }
 
                 Some(decrypt_ctx.decrypt(m, u) as f64)
+            },
+            "pt_freq_dist_error" => {
+                if args.len() < 1 { return None }
+
+                let l = args[0] as usize;
+                if l >= languages.len() { return None }
+
+                Some(languages[l].get_error(cached_var!(pt_freq_dist, {
+                    UnitFrequency::from_messages(&decrypt_ctx.get_all_plaintexts())
+                })))
             },
             _ => None,
         }
@@ -57,10 +80,10 @@ fn try_key(decrypt_ctx: &mut dyn CipherDecryptionContext, cond: &UserCondition, 
     });
 }
 
-fn preamble(messages: &MessageList, keys_total: Integer) {
+fn preamble(messages: &MessageList, worker_total: u32, keys_total: &Integer) {
     let mut working_messages: MessageList = messages.clone();
 
-    println!("Searching {} keys. Ciphertexts (mod_add 32):", keys_total);
+    println!("Searching {} keys with {} workers. Ciphertexts (mod_add 32):", format_big_uint(keys_total), worker_total);
 
     for m in 0..working_messages.len() {
         let msg = &mut working_messages[m];
@@ -74,16 +97,16 @@ fn preamble(messages: &MessageList, keys_total: Integer) {
     println!();
 }
 
-fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: UserCondition, log_semaphore: Semaphore) {
+fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: UserCondition, languages: Vec<UnitFrequency>, log_semaphore: Semaphore) {
     let mut keys_checked = Integer::new();
     let mut keys_checked_accum: u32 = 0;
-    let mut last_print = Instant::now();
     let mut kps_accum_skips = 0;
-
     let worker_keys_total = ctx.get_total_keys();
+    let start_time = Instant::now();
+    let mut last_print = start_time.clone();
 
     ctx.permute_keys(&mut |decrypt_ctx| {
-        try_key(decrypt_ctx, &cond, &log_semaphore);
+        try_key(decrypt_ctx, &cond, &languages, &log_semaphore);
 
         keys_checked_accum += 1;
         // XXX this makes the last round *look* like it's not changing in the
@@ -95,10 +118,15 @@ fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: UserCondition,
 
             let now = Instant::now();
             let secs_since_last = now.duration_since(last_print).as_secs_f64();
-            if secs_since_last >= 1f64 {
+            if secs_since_last >= 15f64 {
+                let secs_since_start = now.duration_since(start_time).as_secs_f64();
+
+                let percent = Rational::from(((&keys_checked * 100), &worker_keys_total)).to_f32();
+                let kps = (KPS_PRINT_MASK * Integer::from(kps_accum_skips + 1)).to_f64() / secs_since_last;
+                let secs_left = Rational::from((&worker_keys_total - &keys_checked, &keys_checked)).to_f64() * secs_since_start;
+
                 critical_section!(log_semaphore, {
-                    let percent = TryInto::<u32>::try_into((&keys_checked * Integer::from(10000)) / &worker_keys_total).unwrap() as f32 / 100.0;
-                    println!("[worker {worker_id}] {percent:.2}% checked ({}/{} keys, {} keys/sec). last key: {}", format_big_uint(&keys_checked), format_big_uint(&worker_keys_total), format_big_float((KPS_PRINT_MASK * (kps_accum_skips + 1)) as f64 / secs_since_last), decrypt_ctx.serialize_key());
+                    println!("[worker {worker_id}] {percent:.2}% checked ({}/{} keys, {} keys/sec, {} left). last key: {}", format_big_uint(&keys_checked), format_big_uint(&worker_keys_total), format_big_float(kps), format_seconds(secs_left), decrypt_ctx.serialize_key());
                 });
                 last_print = now;
                 kps_accum_skips = 0;
@@ -123,6 +151,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //     fast, but the condition has to be re-parsed for each thread
     let cond = UserCondition::new(&args.condition)?;
 
+    let languages = import_csv_languages_or_exit(&args.language);
+
     let messages = import_csv_messages_or_exit(&args.data_path);
     if messages.len() == 0 {
         // TODO return error result instead
@@ -135,10 +165,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_total = if args.sequential {
         1u32
     } else {
-        get_parallelism().min(cipher.get_max_parallelism())
+        let mut max_parallelism: u32 = args.max_parallelism.unwrap_or(unsafe { NonZeroU32::new_unchecked(u32::MAX) }).into();
+        max_parallelism = max_parallelism.min(cipher.get_max_parallelism());
+        get_parallelism().min(max_parallelism)
     };
 
-    println!("Using {} workers", worker_total);
     let log_semaphore = Semaphore::new();
     let mut task_list = AsyncTaskList::new();
     let mut keys_total = Integer::new();
@@ -148,16 +179,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let context = cipher.create_context_parallel(messages.clone(), worker_id, worker_total);
         keys_total += context.get_total_keys();
         let cond_expr_str = args.condition.clone();
+        let languages = languages.clone();
         task_list.add_async(move || {
-            search_task(worker_id, context, UserCondition::new(&cond_expr_str).unwrap(), log_semaphore);
+            search_task(worker_id, context, UserCondition::new(&cond_expr_str).unwrap(), languages, log_semaphore);
         });
     }
 
     let context = cipher.create_context_parallel(messages, 0, worker_total);
     keys_total += context.get_total_keys();
-    preamble(context.get_ciphertexts(), keys_total);
+    preamble(context.get_ciphertexts(), worker_total, &keys_total);
 
-    search_task(0, context, cond, log_semaphore);
+    search_task(0, context, cond, languages, log_semaphore);
 
     task_list.wait();
 

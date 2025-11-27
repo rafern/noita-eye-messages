@@ -10,7 +10,7 @@ dataviz = "0.1.9"
 fasteval = "0.2.4"
 fontconfig = "0.10.0"
 minifb = "0.28.0"
-rug = { version = "1.28.0", default-features = false, features = ["integer"] }
+rug = { version = "1.28.0", default-features = false, features = ["integer", "rational"] }
 
 [profile.release]
 # for some reason thin lto has better performance on my machine

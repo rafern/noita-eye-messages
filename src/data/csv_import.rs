@@ -1,6 +1,6 @@
 use std::{fmt, process};
 use std::error::Error;
-use crate::analysis::freq::{UnitFrequency, sort_freq};
+use crate::analysis::freq::UnitFrequency;
 
 use super::message::{MAX_MESSAGE_COUNT, MAX_MESSAGE_SIZE, Message, MessageList};
 
@@ -142,7 +142,7 @@ pub fn import_csv_languages(paths: &Vec<std::path::PathBuf>) -> Result<Vec<UnitF
             return Err(InvalidFormatError { kind: InvalidFormatErrorKind::MissingLanguageName, row: r, col: 0 }.into());
         }
 
-        sort_freq(&mut freq);
+        freq.sort();
         freqs.push(freq);
     }
 

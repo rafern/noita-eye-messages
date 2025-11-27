@@ -16,7 +16,7 @@ pub fn format_big_float(x: f64) -> String {
     } else if x >= 1_000_000f64 {
         format!("{:.2}M", x / 1_000_000f64)
     } else {
-        format!("{}", x)
+        format!("{:.2}", x)
     }
 }
 
@@ -38,6 +38,40 @@ pub fn format_big_uint(x: &Integer) -> String {
     } else {
         format!("{}", x)
     }
+}
+
+pub fn format_seconds(mut secs: f64) -> String {
+    if secs < 1.0 {
+        return format!("{}ms", (secs * 1000.0).floor());
+    }
+
+    let mut parts = Vec::<String>::new();
+
+    if secs >= 604800.0 { // weeks
+        parts.push(format!("{}w", (secs / 604800.0).floor()));
+        secs %= 604800.0;
+    }
+
+    if secs >= 86400.0 { // days
+        parts.push(format!("{}d", (secs / 86400.0).floor()));
+        secs %= 86400.0;
+    }
+
+    if secs >= 3600.0 { // hours
+        parts.push(format!("{}h", (secs / 3600.0).floor()));
+        secs %= 3600.0;
+    }
+
+    if secs >= 60.0 { // minutes
+        parts.push(format!("{}m", (secs / 60.0).floor()));
+        secs %= 60.0;
+    }
+
+    if secs >= 1.0 { // seconds
+        parts.push(format!("{}s", secs.floor()));
+    }
+
+    parts.join(" ")
 }
 
 pub fn print_ascii_single(c: u8) {

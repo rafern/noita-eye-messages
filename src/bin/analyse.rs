@@ -1,5 +1,5 @@
 use clap::Parser;
-use noita_eye_messages::{analysis::{freq::{count_units, frequency_analysis}, plot::{bar_chart, freq_bar_chart}}, data::csv_import::{import_csv_languages_or_exit, import_csv_messages_or_exit}, utils::threading::AsyncTaskList};
+use noita_eye_messages::{analysis::{freq::{UnitFrequency, UnitTotals}, plot::{bar_chart, freq_bar_chart}}, data::csv_import::{import_csv_languages_or_exit, import_csv_messages_or_exit}, utils::threading::AsyncTaskList};
 
 #[derive(Parser)]
 struct Args {
@@ -16,8 +16,8 @@ fn main() {
     let mut freqs = import_csv_languages_or_exit(&args.language);
     let messages = import_csv_messages_or_exit(&args.data_path);
 
-    let unit_totals = count_units(&messages);
-    let freq = frequency_analysis("Ciphertext", &unit_totals);
+    let unit_totals = UnitTotals::from_messages(&messages);
+    let freq = UnitFrequency::from_unit_totals_with_name("Ciphertext", &unit_totals);
 
     for other in &freqs {
         println!("Frequency distribution error for {} and {}: {}", freq.name, other.name, freq.get_error(other));
