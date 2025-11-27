@@ -1,16 +1,16 @@
 use clap::Parser;
 use noita_eye_messages::analysis::freq::UnitFrequency;
-use noita_eye_messages::ciphers::base::{Cipher, CipherContext, CipherDecryptionContext};
+use noita_eye_messages::ciphers::base::{Cipher, CipherContext};
 use noita_eye_messages::ciphers::deserialise_cipher;
 use noita_eye_messages::utils::user_condition::UserCondition;
 use rug::{Integer, Rational};
 use std::num::NonZeroU32;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
+use std::time::{Duration, Instant};
 use noita_eye_messages::{cached_var, critical_section};
 use noita_eye_messages::utils::threading::{Semaphore, get_parallelism};
 use noita_eye_messages::data::message::MessageList;
-use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, format_seconds, print_message};
+use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, format_seconds_left, print_message};
 use noita_eye_messages::data::csv_import::{import_csv_languages_or_exit, import_csv_messages_or_exit};
 
 #[derive(clap::Parser)]
@@ -34,9 +34,19 @@ struct Args {
     language: Vec<std::path::PathBuf>,
 }
 
+enum TaskPacket {
+    Finished {
+        worker_id: u32,
+    },
+    Progress {
+        keys: u32,
+    },
+}
+
+const RECV_TIMEOUT: Duration = Duration::from_secs(1);
+
 // TODO output matched keys to file
 // TODO suspend to/resume from file
-// TODO generic efficient message passing so that tasks can be interrupted without destroying performance/other message passing can be done, like performance metrics
 
 fn preamble(messages: &MessageList, worker_total: u32, keys_total: &Integer) {
     let mut working_messages: MessageList = messages.clone();
@@ -55,13 +65,7 @@ fn preamble(messages: &MessageList, worker_total: u32, keys_total: &Integer) {
     println!();
 }
 
-fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: UserCondition, languages: Vec<UnitFrequency>, log_semaphore: Semaphore, has_message: &AtomicBool) {
-    let mut keys_checked = Integer::new();
-    let mut keys_checked_since_last_print = Integer::new();
-    let worker_keys_total = ctx.get_total_keys();
-    let start_time = Instant::now();
-    let mut last_print = start_time.clone();
-
+fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: &UserCondition, languages: &Vec<UnitFrequency>, log_semaphore: &Semaphore, tx: SyncSender<TaskPacket>) {
     ctx.permute_keys_interruptible(&mut |decrypt_ctx| {
         let mut pt_freq_dist: Option<UnitFrequency> = None;
 
@@ -102,48 +106,18 @@ fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: UserCondition,
                 });
             }
         });
-    }, &mut |decrypt_ctx, delta_keys_checked| {
-        keys_checked_since_last_print += delta_keys_checked;
-
-        let now = Instant::now();
-        let secs_since_last = now.duration_since(last_print).as_secs_f64();
-        if secs_since_last >= 1f64 {
-            keys_checked += &keys_checked_since_last_print;
-            let secs_since_start = now.duration_since(start_time).as_secs_f64();
-
-            let percent = Rational::from(((&keys_checked * 100), &worker_keys_total)).to_f32();
-            let kps = (keys_checked_since_last_print).to_f64() / secs_since_last;
-            let secs_left = Rational::from((&worker_keys_total - &keys_checked, &keys_checked)).to_f64() * secs_since_start;
-
-            critical_section!(log_semaphore, {
-                println!("[worker {worker_id}] {percent:.2}% checked ({}/{} keys, {} keys/sec, {} left). last key: {}", format_big_uint(&keys_checked), format_big_uint(&worker_keys_total), format_big_float(kps), format_seconds(secs_left), decrypt_ctx.serialize_key());
-            });
-
-            last_print = now;
-            keys_checked_since_last_print = Integer::new();
-        }
-
-        if has_message.load(Ordering::Relaxed) {
-            critical_section!(log_semaphore, {
-                println!("[worker {worker_id}] had a message");
-            });
-        }
-
+    }, &mut |_decrypt_ctx, keys| {
+        tx.send(TaskPacket::Progress { keys }).unwrap();
         true
     });
 
-    critical_section!(log_semaphore, {
-        println!("[worker {}] checked {} keys (done)", worker_id, keys_checked);
-    });
+    tx.send(TaskPacket::Finished { worker_id }).unwrap();
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // XXX this won't be cloned for other threads, because fasteval doesn't
-    //     support it :/. it's still helpful to do this early so that it fails
-    //     fast, but the condition has to be re-parsed for each thread
-    let _cond = UserCondition::new(&args.condition)?;
+    let cond = UserCondition::new(&args.condition)?;
 
     let languages = import_csv_languages_or_exit(&args.language);
 
@@ -164,26 +138,94 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         get_parallelism().min(max_parallelism)
     };
 
+    let log_semaphore = Semaphore::new();
+    let (tx, rx) = sync_channel::<TaskPacket>(64);
+
     std::thread::scope(|scope| {
-        let log_semaphore = Semaphore::new();
         let mut keys_total = Integer::new();
+        let mut contexts = Vec::<Box<dyn CipherContext>>::new();
 
         for worker_id in 0..worker_total {
-            let has_message = AtomicBool::new(false);
-            let log_semaphore = log_semaphore.clone();
             let context = cipher.create_context_parallel(messages.clone(), worker_id, worker_total);
             keys_total += context.get_total_keys();
-            let cond_expr_str = args.condition.clone();
-            let languages = languages.clone();
-
-            scope.spawn(move || {
-                search_task(worker_id, context, UserCondition::new(&cond_expr_str).unwrap(), languages, log_semaphore, &has_message);
-            });
+            contexts.push(context);
         }
 
         preamble(&messages, worker_total, &keys_total);
-    });
 
-    println!("All workers done");
-    Ok(())
+        let start_time = Instant::now();
+
+        let mut worker_id = 0;
+        for context in contexts {
+            let worker_id_clone = worker_id.clone();
+            let cond = &cond;
+            let languages = &languages;
+            let log_semaphore = &log_semaphore;
+            let tx = tx.clone();
+
+            scope.spawn(move || {
+                search_task(worker_id_clone, context, cond, languages, log_semaphore, tx);
+            });
+
+            worker_id += 1;
+        }
+
+        drop(tx);
+
+        let mut keys_checked = Integer::new();
+        let mut keys_checked_since_last_print = Integer::new();
+        let mut last_print = start_time.clone();
+        let mut workers_waiting = worker_total;
+
+        while workers_waiting > 0 {
+            match rx.recv_timeout(RECV_TIMEOUT) {
+                Ok(packet) => {
+                    match packet {
+                        TaskPacket::Finished { worker_id } => {
+                            workers_waiting -= 1;
+                            critical_section!(log_semaphore, {
+                                println!("worker {worker_id} finished task");
+                            });
+                        },
+                        TaskPacket::Progress { keys } => {
+                            keys_checked_since_last_print += keys;
+                        },
+                    }
+                },
+                Err(err) => {
+                    match err {
+                        RecvTimeoutError::Timeout => { /* do nothing */ },
+                        RecvTimeoutError::Disconnected => {
+                            critical_section!(log_semaphore, {
+                                println!("worker channel disconnected (thread died?)");
+                            });
+
+                            return Err(err)?;
+                        },
+                    }
+                },
+            }
+
+            let now = Instant::now();
+            let secs_since_last = now.duration_since(last_print).as_secs_f64();
+            if secs_since_last >= 5f64 {
+                keys_checked += &keys_checked_since_last_print;
+                let secs_since_start = now.duration_since(start_time).as_secs_f64();
+
+                let percent = Rational::from(((&keys_checked * 100), &keys_total)).to_f32();
+                let kps = keys_checked_since_last_print.to_f64() / secs_since_last;
+                let secs_left = Rational::from((&keys_total - &keys_checked, &keys_checked)).to_f64() * secs_since_start;
+
+                critical_section!(log_semaphore, {
+                    println!("{percent:.2}% checked ({}/{} keys, {} keys/sec, {})", format_big_uint(&keys_checked), format_big_uint(&keys_total), format_big_float(kps), format_seconds_left(secs_left));
+                });
+
+                last_print = now;
+                keys_checked_since_last_print = Integer::new();
+            }
+        }
+
+        println!("All workers done");
+        Ok(())
+    })
 }

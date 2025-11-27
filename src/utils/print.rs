@@ -74,6 +74,14 @@ pub fn format_seconds(mut secs: f64) -> String {
     parts.join(" ")
 }
 
+pub fn format_seconds_left(secs: f64) -> String {
+    if secs >= 0.0 {
+        format!("{} left", format_seconds(secs))
+    } else {
+        format!("delayed (should have finished {} ago)", format_seconds(-secs))
+    }
+}
+
 pub fn print_ascii_single(c: u8) {
     // invalid ranges (control characters)
     if c > 127 {

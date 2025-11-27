@@ -51,14 +51,13 @@ impl Drop for AsyncTaskList {
     fn drop(&mut self) { self.wait() }
 }
 
-#[derive(Clone)]
 pub struct Semaphore {
-    mutex: Arc<Mutex<()>>,
+    mutex: Mutex<()>,
 }
 
 impl Semaphore {
     pub fn new() -> Self {
-        Semaphore { mutex: Arc::new(Mutex::new(())) }
+        Semaphore { mutex: Mutex::new(()) }
     }
 
     pub fn lock(&self) -> MutexGuard<'_, ()> {
