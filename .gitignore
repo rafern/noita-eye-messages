@@ -3,3 +3,4 @@
 /src/proto/mod.rs
 *.sublime-project
 *.sublime-workspace
+*.binpb

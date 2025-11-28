@@ -1,9 +1,13 @@
+use prost::Message;
 use clap::Parser;
 use noita_eye_messages::analysis::freq::UnitFrequency;
 use noita_eye_messages::ciphers::base::{Cipher, CipherContext};
 use noita_eye_messages::ciphers::deserialise_cipher;
+use noita_eye_messages::data::key_dump::KeyDumpMeta;
 use noita_eye_messages::utils::user_condition::UserCondition;
 use rug::{Integer, Rational};
+use std::fs::File;
+use std::io::Write;
 use std::num::NonZeroU32;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
@@ -32,6 +36,9 @@ struct Args {
     /// Path to CSV file containing a language's letter frequency distribution. Used to register languages. Refer to a language by its index (0-based) in the order specified in the terminal
     #[clap(short, long)]
     language: Vec<std::path::PathBuf>,
+    /// Path to key dump file, if you want to store matches in a file instead of logging to the console
+    #[arg(short, long)]
+    key_dump_path: Option<std::path::PathBuf>,
 }
 
 enum TaskPacket {
@@ -52,7 +59,6 @@ enum TaskPacket {
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(1);
 
-// TODO output matched keys to file
 // TODO suspend to/resume from file
 
 fn preamble(messages: &MessageList, worker_total: u32, keys_total: &Integer) {
@@ -148,6 +154,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cipher = deserialise_cipher(&args.cipher, &args.config)?;
 
+    let mut key_dump_file: Option<File> = match &args.key_dump_path {
+        Some(path) => {
+            let mut file = File::create_new(path)?;
+            let meta = KeyDumpMeta {
+                build_hash: String::from(env!("GIT_HASH")),
+                cipher_name: args.cipher.clone(),
+                cipher_config: args.config.clone(),
+            };
+            // FIXME is there a way to write directly to the file?
+            file.write(meta.encode_to_vec().as_slice())?;
+            Some(file)
+        },
+        None => None,
+    };
+
     let worker_total = if args.sequential {
         1u32
     } else {
@@ -209,10 +230,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             keys_checked_since_last_print += keys;
                         },
                         TaskPacket::Match { net_key } => {
-                            critical_section!(log_semaphore, {
-                                // TODO serialize to file
-                                println!("Match with key {}", cipher.net_key_to_string(net_key));
-                            });
+                            match key_dump_file {
+                                Some(ref mut file) => {
+                                    // FIXME is there a way to write directly to the file?
+                                    file.write(net_key.encode_to_vec().as_slice())?;
+                                },
+                                None => {
+                                    critical_section!(log_semaphore, {
+                                        println!("Matched key {}", cipher.net_key_to_string(net_key));
+                                    });
+                                },
+                            }
                         }
                     }
                 },

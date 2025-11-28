@@ -2,8 +2,10 @@ use std::io::Write;
 use std::fs::File;
 use std::path::PathBuf;
 use std::io::Result;
+use std::process::Command;
 
 fn main() -> Result<()> {
+    // build .proto files
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/proto");
     let mut proto_files = Vec::<PathBuf>::new();
     let mut proto_bare_names = Vec::<String>::new();
@@ -37,6 +39,11 @@ pub mod {bare_name} {{
     include!(concat!(env!("OUT_DIR"), "/noita_eye_messages.proto.{bare_name}.rs"));
 }}"#    )?;
     }
+
+    // custom compile-time env vars
+    let output = Command::new("git").args(&["rev-parse", "HEAD"]).output().unwrap();
+    let git_hash = String::from_utf8(output.stdout).unwrap();
+    println!("cargo:rustc-env=GIT_HASH={}", git_hash);
 
     Ok(())
 }
