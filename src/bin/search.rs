@@ -79,7 +79,12 @@ fn preamble(messages: &MessageList, worker_total: u32, keys_total: &Integer) {
 }
 
 fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64, keys_total: &Integer, keys_checked: &Integer, keys_checked_since_last_print: &Integer, log_semaphore: &Semaphore) {
-    let percent = Rational::from((&*keys_checked * 100, &*keys_total)).to_f32();
+    let percent = if *keys_total == 0 {
+        100.0
+    } else {
+        Rational::from((&*keys_checked * 100, &*keys_total)).to_f32()
+    };
+
     let kps = keys_checked_since_last_print.to_f64() / secs_since_last;
     let print_begin = format!("Progress: {percent:.2}% checked ({}/{} keys), {} keys/sec", format_big_uint(&keys_checked), format_big_uint(&keys_total), format_big_float(kps));
 
@@ -138,7 +143,7 @@ fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: &UserCondition
     tx.send(TaskPacket::Finished { worker_id }).unwrap();
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let cond = UserCondition::new(&args.condition)?;
@@ -290,4 +295,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Ok(())
     })
+}
+
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
 }

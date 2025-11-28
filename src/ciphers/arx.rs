@@ -1,53 +1,34 @@
 use prost::Message;
 use rug::{Integer, ops::Pow};
 
-/**
+use crate::{ciphers::base::{Cipher, CipherContext, CipherDecryptionContext, StandardCipherError}, data::message::MessageList, utils::threading::get_worker_slice};
+
+/*
  * WARNING:
  * As Lymm stated on Discord, this is equivalent to a homophonic substitution
  * cipher, so this is now used as just a test-bench/example. Don't actually use
  * this to do cryptanalysis
  */
 
-use crate::{data::message::MessageList, proto::arx::{EncodedArxKey, EncodedArxRound}, utils::threading::get_worker_slice};
+const KEYS_PER_ROUND: u32 = 524288;
 
-use super::base::{Cipher, CipherContext, CipherDecryptionContext, StandardCipherError};
-
-macro_rules! permute_round_parameter {
-    ($param:expr, $range_max:expr, $callback:block) => {
-        for x in 0..=$range_max {
-            $param = x;
-            $callback
-        }
-    }
-}
-
-macro_rules! permute_round {
-    ($round:expr, $callback:block) => {
-        permute_round_parameter!($round.add, 255, {
-            permute_round_parameter!($round.xor, 255, {
-                permute_round_parameter!($round.rot, 7, {
-                    $callback
-                });
-            });
-        });
-    };
-}
-
-const ARX_ROUND_COUNT: usize = 2;
-
-#[derive(Default)]
+#[derive(prost::Message)]
 struct ARXRound {
-    /** range: 0-7. u32 instead of u8 for performance reasons */
+    #[prost(uint32, tag = "2")]
+    /** range: 0-7 */
     pub rot: u32,
+    #[prost(uint32, tag = "1")]
     /** range: 0-255 */
-    pub add: u8,
+    pub add: u32,
+    #[prost(uint32, tag = "3")]
     /** range: 0-255 */
-    pub xor: u8,
+    pub xor: u32,
 }
 
-#[derive(Default)]
+#[derive(prost::Message)]
 struct ARXKey {
-    pub rounds: [ARXRound; ARX_ROUND_COUNT],
+    #[prost(message, repeated, tag = "1")]
+    pub rounds: Vec<ARXRound>,
 }
 
 pub struct ARXCipherDecryptContext<'a> {
@@ -57,16 +38,7 @@ pub struct ARXCipherDecryptContext<'a> {
 
 impl<'a> CipherDecryptionContext<'a> for ARXCipherDecryptContext<'a> {
     fn get_current_key_net(&self) -> Vec<u8> {
-        let mut e_key = EncodedArxKey::default();
-        for round in &self.key.rounds {
-            let mut e_round = EncodedArxRound::default();
-            e_round.add = round.add as u32;
-            e_round.rot = round.rot;
-            e_round.xor = round.xor as u32;
-            e_key.rounds.push(e_round);
-        }
-
-        e_key.encode_to_vec()
+        self.key.encode_to_vec()
     }
 
     fn get_plaintext_name(&self, message_index: usize) -> String {
@@ -85,7 +57,7 @@ impl<'a> CipherDecryptionContext<'a> for ARXCipherDecryptContext<'a> {
         let mut byte = self.ctx.ciphertexts[message_index].data[unit_index];
 
         for round in &self.key.rounds {
-            byte = byte.wrapping_add(round.add).rotate_right(round.rot) ^ round.xor;
+            byte = byte.wrapping_add(round.add as u8).rotate_right(round.rot) ^ (round.xor as u8);
         }
 
         byte
@@ -94,14 +66,54 @@ impl<'a> CipherDecryptionContext<'a> for ARXCipherDecryptContext<'a> {
 
 pub struct ARXCipherContext {
     ciphertexts: MessageList,
-    a_min: u8,
-    a_max: u8,
+    a_min: u32,
+    a_max: u32,
+    round_count: usize,
+}
+
+impl ARXCipherContext {
+    fn permute_additional_round<'a>(&'a self, r: usize, r_max: usize, decrypt_ctx: &mut ARXCipherDecryptContext<'a>, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>, u32) -> bool) -> bool {
+        // TODO maybe do macro for this entire pattern, including the part in
+        //      the other method?
+        if r == unsafe { r_max.unchecked_sub(1) } {
+            // last round, do occasional callback and don't recurse
+            for add in 0..=255 {
+                decrypt_ctx.key.rounds[r].add = add;
+                for xor in 0..=255 {
+                    decrypt_ctx.key.rounds[r].xor = xor;
+                    for rot in 0..=7 {
+                        decrypt_ctx.key.rounds[r].rot = rot;
+                        key_callback(decrypt_ctx);
+                    }
+                }
+            }
+
+            occasional_callback(decrypt_ctx, KEYS_PER_ROUND)
+        } else {
+            // middle round, recurse
+            for add in 0..=255 {
+                decrypt_ctx.key.rounds[r].add = add;
+                for xor in 0..=255 {
+                    decrypt_ctx.key.rounds[r].xor = xor;
+                    for rot in 0..=7 {
+                        decrypt_ctx.key.rounds[r].rot = rot;
+                        if !self.permute_additional_round(r + 1, r_max, decrypt_ctx, key_callback, occasional_callback) {
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            true
+        }
+    }
 }
 
 impl CipherContext for ARXCipherContext {
     fn get_total_keys(&self) -> Integer {
+        if self.round_count == 0 { return Integer::new(); }
         let mut total = Integer::from(((self.a_max - self.a_min) as u64 + 1) * 2048);
-        total *= Integer::from(524288).pow(ARX_ROUND_COUNT as u32 - 1);
+        total *= Integer::from(KEYS_PER_ROUND).pow((self.round_count - 1) as u32);
         total
     }
 
@@ -109,45 +121,39 @@ impl CipherContext for ARXCipherContext {
         &self.ciphertexts
     }
 
-    fn permute_keys<'a>(&'a self, callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>)) {
+    fn permute_keys_interruptible<'a>(&'a self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>, u32) -> bool) {
+        let r_max: usize = self.round_count;
+        if r_max == 0 { return }
+
         let mut decrypt_ctx = ARXCipherDecryptContext {
-            key: ARXKey::default(),
+            key: ARXKey { rounds: Vec::with_capacity(r_max) },
             ctx: &self,
         };
+        decrypt_ctx.key.rounds.resize_with(r_max, ARXRound::default);
 
-        // TODO (or don't idc anymore) - make this react to round count changes
-        for r0a in self.a_min..=self.a_max {
-            decrypt_ctx.key.rounds[0].add = r0a;
-            for r0x in 0..=255 {
-                decrypt_ctx.key.rounds[0].xor = r0x;
-                for r0r in 0..=7 {
-                    decrypt_ctx.key.rounds[0].rot = r0r;
-                    permute_round!(decrypt_ctx.key.rounds[1], {
-                        callback(&mut decrypt_ctx);
-                    });
+        if r_max == 1 {
+            for add in self.a_min..=self.a_max {
+                decrypt_ctx.key.rounds[0].add = add;
+                for xor in 0..=255 {
+                    decrypt_ctx.key.rounds[0].xor = xor;
+                    for rot in 0..=7 {
+                        decrypt_ctx.key.rounds[0].rot = rot;
+                        key_callback(&mut decrypt_ctx);
+                    }
                 }
             }
-        }
-    }
 
-    fn permute_keys_interruptible<'a>(&'a self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>, u32) -> bool) {
-        let mut decrypt_ctx = ARXCipherDecryptContext {
-            key: ARXKey::default(),
-            ctx: &self,
-        };
+            occasional_callback(&mut decrypt_ctx, (self.a_max - self.a_min + 1) * 256 * 8);
+        } else {
+            for add in self.a_min..=self.a_max {
+                decrypt_ctx.key.rounds[0].add = add;
+                for xor in 0..=255 {
+                    decrypt_ctx.key.rounds[0].xor = xor;
+                    for rot in 0..=7 {
+                        decrypt_ctx.key.rounds[0].rot = rot;
 
-        // TODO (or don't idc anymore) - make this react to round count changes
-        for r0a in self.a_min..=self.a_max {
-            decrypt_ctx.key.rounds[0].add = r0a;
-            for r0x in 0..=255 {
-                decrypt_ctx.key.rounds[0].xor = r0x;
-                for r0r in 0..=7 {
-                    decrypt_ctx.key.rounds[0].rot = r0r;
-                    permute_round!(decrypt_ctx.key.rounds[1], {
-                        key_callback(&mut decrypt_ctx);
-                    });
-
-                    if !occasional_callback(&mut decrypt_ctx, 524288) { return }
+                        if !self.permute_additional_round(1, r_max, &mut decrypt_ctx, key_callback, occasional_callback) { return }
+                    }
                 }
             }
         }
@@ -155,13 +161,15 @@ impl CipherContext for ARXCipherContext {
 }
 
 #[derive(Debug)]
-pub struct ARXCipher {}
+pub struct ARXCipher {
+    round_count: usize,
+}
 
 impl ARXCipher {
     pub fn new(config: &Option<String>) -> Result<ARXCipher, Box<dyn std::error::Error>> {
         match config {
-            Some(_) => Err(StandardCipherError::NotConfigurable.into()),
-            None => Ok(ARXCipher {}.into()),
+            Some(s) => Ok(ARXCipher { round_count: s.parse::<usize>()? }),
+            None => Err(StandardCipherError::MissingConfiguration.into()),
         }
     }
 }
@@ -170,9 +178,10 @@ impl Cipher for ARXCipher {
     fn get_max_parallelism(&self) -> u32 { 256 }
 
     fn create_context_parallel(&self, ciphertexts: MessageList, worker_id: u32, worker_total: u32) -> Box<dyn CipherContext> {
-        let (a_min, a_max) = get_worker_slice::<u8>(255, worker_id, worker_total);
+        let (a_min, a_max) = get_worker_slice::<u32>(255, worker_id, worker_total);
 
         Box::new(ARXCipherContext {
+            round_count: self.round_count,
             ciphertexts,
             a_min,
             a_max,
@@ -180,6 +189,6 @@ impl Cipher for ARXCipher {
     }
 
     fn net_key_to_string(&self, net_key: Vec<u8>) -> String {
-        format!("{:?}", EncodedArxKey::decode(net_key.as_slice()))
+        format!("{:?}", ARXKey::decode(net_key.as_slice()))
     }
 }

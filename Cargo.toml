@@ -13,9 +13,6 @@ minifb = "0.28.0"
 prost = "0.14.1"
 rug = { version = "1.28.0", default-features = false, features = ["integer", "rational"] }
 
-[build-dependencies]
-prost-build = "0.14.1"
-
 [profile.release]
 # for some reason thin lto has better performance on my machine
 lto = "thin"

@@ -9,6 +9,7 @@ use crate::utils::stackvec::StackVec;
 pub enum StandardCipherError {
     UnknownCipher,
     NotConfigurable,
+    MissingConfiguration,
 }
 
 impl fmt::Display for StandardCipherError {
@@ -16,6 +17,7 @@ impl fmt::Display for StandardCipherError {
         write!(f, "{}", match self {
             StandardCipherError::UnknownCipher => "Unknown cipher",
             StandardCipherError::NotConfigurable => "This cipher is not configurable",
+            StandardCipherError::MissingConfiguration => "This cipher needs configuration",
         })
     }
 }
@@ -51,12 +53,15 @@ pub trait CipherDecryptionContext<'a> {
 pub trait CipherContext: Send {
     fn get_total_keys(&self) -> Integer;
     fn get_ciphertexts(&self) -> &MessageList;
-    fn permute_keys<'a>(&'a self, callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>));
     /**
      * key_callback must be called for each key
      * occasional_callback must be called at least every u32::MAX keys
      */
     fn permute_keys_interruptible<'a>(&'a self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>, u32) -> bool);
+
+    fn permute_keys<'a>(&'a self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>)) {
+        self.permute_keys_interruptible(key_callback, &mut |_, _| { true });
+    }
 }
 
 /**
