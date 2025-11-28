@@ -1,3 +1,4 @@
+use prost::Message;
 use rug::{Integer, ops::Pow};
 
 /**
@@ -7,7 +8,7 @@ use rug::{Integer, ops::Pow};
  * this to do cryptanalysis
  */
 
-use crate::{data::message::MessageList, utils::threading::get_worker_slice};
+use crate::{data::message::MessageList, proto::arx::{EncodedArxKey, EncodedArxRound}, utils::threading::get_worker_slice};
 
 use super::base::{Cipher, CipherContext, CipherDecryptionContext, StandardCipherError};
 
@@ -34,7 +35,6 @@ macro_rules! permute_round {
 
 const ARX_ROUND_COUNT: usize = 2;
 
-#[derive(Debug)]
 #[derive(Default)]
 struct ARXRound {
     /** range: 0-7. u32 instead of u8 for performance reasons */
@@ -45,7 +45,6 @@ struct ARXRound {
     pub xor: u8,
 }
 
-#[derive(Debug)]
 #[derive(Default)]
 struct ARXKey {
     pub rounds: [ARXRound; ARX_ROUND_COUNT],
@@ -57,10 +56,17 @@ pub struct ARXCipherDecryptContext<'a> {
 }
 
 impl<'a> CipherDecryptionContext<'a> for ARXCipherDecryptContext<'a> {
-    fn serialize_key(&self) -> String {
-        // TODO use serde instead, this is temporary. deserialization will be
-        //      supported in the future
-        format!("{:?}", self.key)
+    fn get_current_key_net(&self) -> Vec<u8> {
+        let mut e_key = EncodedArxKey::default();
+        for round in &self.key.rounds {
+            let mut e_round = EncodedArxRound::default();
+            e_round.add = round.add as u32;
+            e_round.rot = round.rot;
+            e_round.xor = round.xor as u32;
+            e_key.rounds.push(e_round);
+        }
+
+        e_key.encode_to_vec()
     }
 
     fn get_plaintext_name(&self, message_index: usize) -> String {
@@ -171,5 +177,9 @@ impl Cipher for ARXCipher {
             a_min,
             a_max,
         })
+    }
+
+    fn net_key_to_string(&self, net_key: Vec<u8>) -> String {
+        format!("{:?}", EncodedArxKey::decode(net_key.as_slice()))
     }
 }

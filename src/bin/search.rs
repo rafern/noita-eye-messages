@@ -41,6 +41,13 @@ enum TaskPacket {
     Progress {
         keys: u32,
     },
+    Match {
+        // XXX it doesn't really make sense to be passing around protobuf
+        //     messages like this, but the project is still in a weird
+        //     transition state where it doesn't support distributed computing
+        //     yet, but will
+        net_key: Vec<u8>,
+    },
 }
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(1);
@@ -85,7 +92,7 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
     }
 }
 
-fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: &UserCondition, languages: &Vec<UnitFrequency>, log_semaphore: &Semaphore, tx: SyncSender<TaskPacket>) {
+fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: &UserCondition, languages: &Vec<UnitFrequency>, _log_semaphore: &Semaphore, tx: SyncSender<TaskPacket>) {
     ctx.permute_keys_interruptible(&mut |decrypt_ctx| {
         let mut pt_freq_dist: Option<UnitFrequency> = None;
 
@@ -116,16 +123,7 @@ fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: &UserCondition
             }
         }).unwrap() { return }
 
-        critical_section!(log_semaphore, {
-            println!("Match with key {}:", decrypt_ctx.serialize_key());
-
-            for m in 0..decrypt_ctx.get_plaintext_count() {
-                print_message(&decrypt_ctx.get_plaintext(m), MessagePrintConfig {
-                    multiview: true,
-                    max_len: 8,
-                });
-            }
-        });
+        tx.send(TaskPacket::Match { net_key: decrypt_ctx.get_current_key_net() }).unwrap();
     }, &mut |_decrypt_ctx, keys| {
         tx.send(TaskPacket::Progress { keys }).unwrap();
         true
@@ -210,6 +208,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         TaskPacket::Progress { keys } => {
                             keys_checked_since_last_print += keys;
                         },
+                        TaskPacket::Match { net_key } => {
+                            critical_section!(log_semaphore, {
+                                // TODO serialize to file
+                                println!("Match with key {}", cipher.net_key_to_string(net_key));
+                            });
+                        }
                     }
                 },
                 Err(err) => {

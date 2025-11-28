@@ -23,7 +23,7 @@ impl fmt::Display for StandardCipherError {
 impl Error for StandardCipherError {}
 
 pub trait CipherDecryptionContext<'a> {
-    fn serialize_key(&self) -> String;
+    fn get_current_key_net(&self) -> Vec<u8>;
     fn get_plaintext_name(&self, message_index: usize) -> String;
     fn get_plaintext_count(&self) -> usize;
     fn get_plaintext_len(&self, message_index: usize) -> usize;
@@ -68,6 +68,7 @@ pub trait CipherContext: Send {
 pub trait Cipher {
     fn get_max_parallelism(&self) -> u32;
     fn create_context_parallel(&self, ciphertexts: MessageList, worker_id: u32, worker_total: u32) -> Box<dyn CipherContext>;
+    fn net_key_to_string(&self, net_key: Vec<u8>) -> String;
 
     fn create_context(&self, ciphertexts: MessageList) -> Box<dyn CipherContext> {
         self.create_context_parallel(ciphertexts, 0, 1)
