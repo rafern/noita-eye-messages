@@ -36,7 +36,7 @@ pub struct ARXCipherDecryptContext<'a> {
     ctx: &'a ARXCipherContext,
 }
 
-impl<'a> CipherDecryptionContext<'a> for ARXCipherDecryptContext<'a> {
+impl CipherDecryptionContext for ARXCipherDecryptContext<'_> {
     fn get_current_key_net(&self) -> Vec<u8> {
         self.key.encode_to_vec()
     }
@@ -72,7 +72,7 @@ pub struct ARXCipherContext {
 }
 
 impl ARXCipherContext {
-    fn permute_additional_round<'a>(&'a self, r: usize, r_max: usize, decrypt_ctx: &mut ARXCipherDecryptContext<'a>, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>, u32) -> bool) -> bool {
+    fn permute_additional_round(&self, r: usize, r_max: usize, decrypt_ctx: &mut ARXCipherDecryptContext, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext, u32) -> bool) -> bool {
         // TODO maybe do macro for this entire pattern, including the part in
         //      the other method?
         if r == unsafe { r_max.unchecked_sub(1) } {
@@ -121,7 +121,7 @@ impl CipherContext for ARXCipherContext {
         &self.ciphertexts
     }
 
-    fn permute_keys_interruptible<'a>(&'a self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>, u32) -> bool) {
+    fn permute_keys_interruptible(&self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext, u32) -> bool) {
         let r_max: usize = self.round_count;
         if r_max == 0 { return }
 

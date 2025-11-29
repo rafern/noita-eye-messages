@@ -24,7 +24,7 @@ impl fmt::Display for StandardCipherError {
 
 impl Error for StandardCipherError {}
 
-pub trait CipherDecryptionContext<'a> {
+pub trait CipherDecryptionContext {
     fn get_current_key_net(&self) -> Vec<u8>;
     fn get_plaintext_name(&self, message_index: usize) -> String;
     fn get_plaintext_count(&self) -> usize;
@@ -57,9 +57,9 @@ pub trait CipherContext: Send {
      * key_callback must be called for each key
      * occasional_callback must be called at least every u32::MAX keys
      */
-    fn permute_keys_interruptible<'a>(&'a self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>, u32) -> bool);
+    fn permute_keys_interruptible(&self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext, u32) -> bool);
 
-    fn permute_keys<'a>(&'a self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext<'a>)) {
+    fn permute_keys(&self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext)) {
         self.permute_keys_interruptible(key_callback, &mut |_, _| { true });
     }
 }
