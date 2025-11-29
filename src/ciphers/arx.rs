@@ -1,7 +1,7 @@
 use prost::Message;
 use rug::{Integer, ops::Pow};
 
-use crate::{ciphers::base::{Cipher, CipherContext, CipherDecryptionContext, StandardCipherError}, data::message::MessageList, utils::threading::get_worker_slice};
+use crate::{ciphers::base::{Cipher, CipherWorkerContext, CipherCodecContext, StandardCipherError}, data::message::MessageList, utils::threading::get_worker_slice};
 
 /*
  * WARNING:
@@ -49,12 +49,12 @@ struct ARXKey {
     pub rounds: Vec<ARXRound>,
 }
 
-pub struct ARXCipherDecryptContext {
+pub struct ARXCodecContext {
     key: ARXKey,
     ciphertexts: MessageList,
 }
 
-impl CipherDecryptionContext for ARXCipherDecryptContext {
+impl CipherCodecContext for ARXCodecContext {
     fn get_current_key_net(&self) -> Vec<u8> {
         self.key.encode_to_vec()
     }
@@ -82,27 +82,27 @@ impl CipherDecryptionContext for ARXCipherDecryptContext {
     }
 }
 
-pub struct ARXCipherContext {
+pub struct ARXWorkerContext {
     a_min: u32,
     a_max: u32,
     round_count: usize,
 }
 
-impl ARXCipherContext {
-    fn permute_additional_round<KC: FnMut(&mut ARXCipherDecryptContext), OC: FnMut(&mut ARXCipherDecryptContext, u32) -> bool>(&self, r: usize, r_max: usize, decrypt_ctx: &mut ARXCipherDecryptContext, key_callback: &mut KC, occasional_callback: &mut OC) -> bool {
+impl ARXWorkerContext {
+    fn permute_additional_round<KC: FnMut(&mut ARXCodecContext), CC: FnMut(&mut ARXCodecContext, u32) -> bool>(&self, r: usize, r_max: usize, codec_ctx: &mut ARXCodecContext, key_callback: &mut KC, chunk_callback: &mut CC) -> bool {
         // TODO maybe do macro for this entire pattern, including the part in
         //      the other method?
         if r == unsafe { r_max.unchecked_sub(1) } {
             // last round, do occasional callback and don't recurse
-            permute_round!(decrypt_ctx.key.rounds[r], {
-                key_callback(decrypt_ctx)
+            permute_round!(codec_ctx.key.rounds[r], {
+                key_callback(codec_ctx)
             });
 
-            occasional_callback(decrypt_ctx, KEYS_PER_ROUND)
+            chunk_callback(codec_ctx, KEYS_PER_ROUND)
         } else {
             // middle round, recurse
-            permute_round!(decrypt_ctx.key.rounds[r], {
-                if !self.permute_additional_round(r + 1, r_max, decrypt_ctx, key_callback, occasional_callback) {
+            permute_round!(codec_ctx.key.rounds[r], {
+                if !self.permute_additional_round(r + 1, r_max, codec_ctx, key_callback, chunk_callback) {
                     return false;
                 }
             });
@@ -112,8 +112,8 @@ impl ARXCipherContext {
     }
 }
 
-impl CipherContext for ARXCipherContext {
-    type DecryptionContext = ARXCipherDecryptContext;
+impl CipherWorkerContext for ARXWorkerContext {
+    type DecryptionContext = ARXCodecContext;
 
     fn get_total_keys(&self) -> Integer {
         if self.round_count == 0 { return Integer::new(); }
@@ -122,25 +122,25 @@ impl CipherContext for ARXCipherContext {
         total
     }
 
-    fn permute_keys_interruptible<KC: FnMut(&mut ARXCipherDecryptContext), OC: FnMut(&mut ARXCipherDecryptContext, u32) -> bool>(&self, ciphertexts: &MessageList, key_callback: &mut KC, occasional_callback: &mut OC) {
+    fn permute_keys_interruptible<KC: FnMut(&mut ARXCodecContext), CC: FnMut(&mut ARXCodecContext, u32) -> bool>(&self, ciphertexts: &MessageList, key_callback: &mut KC, chunk_callback: &mut CC) {
         let r_max: usize = self.round_count;
         if r_max == 0 { return }
 
-        let mut decrypt_ctx = ARXCipherDecryptContext {
+        let mut codec_ctx = ARXCodecContext {
             key: ARXKey { rounds: Vec::with_capacity(r_max) },
             ciphertexts: ciphertexts.clone(),
         };
-        decrypt_ctx.key.rounds.resize_with(r_max, ARXRound::default);
+        codec_ctx.key.rounds.resize_with(r_max, ARXRound::default);
 
         if r_max == 1 {
-            permute_round!(decrypt_ctx.key.rounds[0], self.a_min, self.a_max, {
-                key_callback(&mut decrypt_ctx);
+            permute_round!(codec_ctx.key.rounds[0], self.a_min, self.a_max, {
+                key_callback(&mut codec_ctx);
             });
 
-            occasional_callback(&mut decrypt_ctx, (self.a_max - self.a_min + 1) * 256 * 8);
+            chunk_callback(&mut codec_ctx, (self.a_max - self.a_min + 1) * 256 * 8);
         } else {
-            permute_round!(decrypt_ctx.key.rounds[0], self.a_min, self.a_max, {
-                if !self.permute_additional_round(1, r_max, &mut decrypt_ctx, key_callback, occasional_callback) { return }
+            permute_round!(codec_ctx.key.rounds[0], self.a_min, self.a_max, {
+                if !self.permute_additional_round(1, r_max, &mut codec_ctx, key_callback, chunk_callback) { return }
             });
         }
     }
@@ -161,14 +161,14 @@ impl ARXCipher {
 }
 
 impl Cipher for ARXCipher {
-    type Context = ARXCipherContext;
+    type Context = ARXWorkerContext;
 
     fn get_max_parallelism(&self) -> u32 { 256 }
 
-    fn create_context_parallel(&self, worker_id: u32, worker_total: u32) -> <ARXCipher as Cipher>::Context {
+    fn create_worker_context_parallel(&self, worker_id: u32, worker_total: u32) -> <ARXCipher as Cipher>::Context {
         let (a_min, a_max) = get_worker_slice::<u32>(255, worker_id, worker_total);
 
-        ARXCipherContext {
+        ARXWorkerContext {
             round_count: self.round_count,
             a_min,
             a_max,
