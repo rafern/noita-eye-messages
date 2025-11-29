@@ -12,6 +12,24 @@ use crate::{ciphers::base::{Cipher, CipherContext, CipherDecryptionContext, Stan
 
 const KEYS_PER_ROUND: u32 = 524288;
 
+macro_rules! permute_round {
+    ($round:expr, $add_min:expr, $add_max:expr, $callback:block) => {
+        for add in $add_min..=$add_max {
+            $round.add = add;
+            for xor in 0..=255 {
+                $round.xor = xor;
+                for rot in 0..=7 {
+                    $round.rot = rot;
+                    $callback;
+                }
+            }
+        }
+    };
+    ($round:expr, $callback:block) => {
+        permute_round!($round, 0, 255, $callback)
+    };
+}
+
 #[derive(prost::Message)]
 struct ARXRound {
     #[prost(uint32, tag = "2")]
@@ -76,32 +94,18 @@ impl ARXCipherContext {
         //      the other method?
         if r == unsafe { r_max.unchecked_sub(1) } {
             // last round, do occasional callback and don't recurse
-            for add in 0..=255 {
-                decrypt_ctx.key.rounds[r].add = add;
-                for xor in 0..=255 {
-                    decrypt_ctx.key.rounds[r].xor = xor;
-                    for rot in 0..=7 {
-                        decrypt_ctx.key.rounds[r].rot = rot;
-                        key_callback(decrypt_ctx);
-                    }
-                }
-            }
+            permute_round!(decrypt_ctx.key.rounds[r], {
+                key_callback(decrypt_ctx)
+            });
 
             occasional_callback(decrypt_ctx, KEYS_PER_ROUND)
         } else {
             // middle round, recurse
-            for add in 0..=255 {
-                decrypt_ctx.key.rounds[r].add = add;
-                for xor in 0..=255 {
-                    decrypt_ctx.key.rounds[r].xor = xor;
-                    for rot in 0..=7 {
-                        decrypt_ctx.key.rounds[r].rot = rot;
-                        if !self.permute_additional_round(r + 1, r_max, decrypt_ctx, key_callback, occasional_callback) {
-                            return false;
-                        }
-                    }
+            permute_round!(decrypt_ctx.key.rounds[r], {
+                if !self.permute_additional_round(r + 1, r_max, decrypt_ctx, key_callback, occasional_callback) {
+                    return false;
                 }
-            }
+            });
 
             true
         }
@@ -129,30 +133,15 @@ impl CipherContext for ARXCipherContext {
         decrypt_ctx.key.rounds.resize_with(r_max, ARXRound::default);
 
         if r_max == 1 {
-            for add in self.a_min..=self.a_max {
-                decrypt_ctx.key.rounds[0].add = add;
-                for xor in 0..=255 {
-                    decrypt_ctx.key.rounds[0].xor = xor;
-                    for rot in 0..=7 {
-                        decrypt_ctx.key.rounds[0].rot = rot;
-                        key_callback(&mut decrypt_ctx);
-                    }
-                }
-            }
+            permute_round!(decrypt_ctx.key.rounds[0], self.a_min, self.a_max, {
+                key_callback(&mut decrypt_ctx);
+            });
 
             occasional_callback(&mut decrypt_ctx, (self.a_max - self.a_min + 1) * 256 * 8);
         } else {
-            for add in self.a_min..=self.a_max {
-                decrypt_ctx.key.rounds[0].add = add;
-                for xor in 0..=255 {
-                    decrypt_ctx.key.rounds[0].xor = xor;
-                    for rot in 0..=7 {
-                        decrypt_ctx.key.rounds[0].rot = rot;
-
-                        if !self.permute_additional_round(1, r_max, &mut decrypt_ctx, key_callback, occasional_callback) { return }
-                    }
-                }
-            }
+            permute_round!(decrypt_ctx.key.rounds[0], self.a_min, self.a_max, {
+                if !self.permute_additional_round(1, r_max, &mut decrypt_ctx, key_callback, occasional_callback) { return }
+            });
         }
     }
 }
