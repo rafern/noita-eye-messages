@@ -103,7 +103,7 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
     }
 }
 
-fn search_task(worker_id: u32, ctx: Box<dyn CipherContext>, cond: &UserCondition, languages: &Vec<UnitFrequency>, _log_semaphore: &Semaphore, tx: SyncSender<TaskPacket>) {
+fn search_task(worker_id: u32, ctx: impl CipherContext, cond: &UserCondition, languages: &Vec<UnitFrequency>, _log_semaphore: &Semaphore, tx: SyncSender<TaskPacket>) {
     ctx.permute_keys_interruptible(&mut |decrypt_ctx| {
         let mut pt_freq_dist: Option<UnitFrequency> = None;
 
@@ -187,7 +187,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     std::thread::scope(|scope| {
         let mut keys_total = Integer::new();
-        let mut contexts = Vec::<Box<dyn CipherContext>>::new();
+        let mut contexts = Vec::new();
 
         for worker_id in 0..worker_total {
             let context = cipher.create_context_parallel(messages.clone(), worker_id, worker_total);

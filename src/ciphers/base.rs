@@ -71,11 +71,13 @@ pub trait CipherContext: Send {
  *      for weird reasons)
  */
 pub trait Cipher {
+    type Context: CipherContext;
+
     fn get_max_parallelism(&self) -> u32;
-    fn create_context_parallel(&self, ciphertexts: MessageList, worker_id: u32, worker_total: u32) -> Box<dyn CipherContext>;
+    fn create_context_parallel(&self, ciphertexts: MessageList, worker_id: u32, worker_total: u32) -> Self::Context;
     fn net_key_to_string(&self, net_key: Vec<u8>) -> String;
 
-    fn create_context(&self, ciphertexts: MessageList) -> Box<dyn CipherContext> {
+    fn create_context(&self, ciphertexts: MessageList) -> Self::Context {
         self.create_context_parallel(ciphertexts, 0, 1)
     }
 }

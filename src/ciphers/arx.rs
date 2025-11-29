@@ -175,17 +175,19 @@ impl ARXCipher {
 }
 
 impl Cipher for ARXCipher {
+    type Context = ARXCipherContext;
+
     fn get_max_parallelism(&self) -> u32 { 256 }
 
-    fn create_context_parallel(&self, ciphertexts: MessageList, worker_id: u32, worker_total: u32) -> Box<dyn CipherContext> {
+    fn create_context_parallel(&self, ciphertexts: MessageList, worker_id: u32, worker_total: u32) -> <ARXCipher as Cipher>::Context {
         let (a_min, a_max) = get_worker_slice::<u32>(255, worker_id, worker_total);
 
-        Box::new(ARXCipherContext {
+        ARXCipherContext {
             round_count: self.round_count,
             ciphertexts,
             a_min,
             a_max,
-        })
+        }
     }
 
     fn net_key_to_string(&self, net_key: Vec<u8>) -> String {
