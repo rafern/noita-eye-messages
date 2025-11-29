@@ -1,7 +1,7 @@
 use prost::Message;
 use clap::Parser;
 use noita_eye_messages::analysis::freq::UnitFrequency;
-use noita_eye_messages::ciphers::base::{Cipher, CipherContext};
+use noita_eye_messages::ciphers::base::{Cipher, CipherContext, CipherDecryptionContext};
 use noita_eye_messages::ciphers::deserialise_cipher;
 use noita_eye_messages::data::key_dump::KeyDumpMeta;
 use noita_eye_messages::utils::user_condition::UserCondition;

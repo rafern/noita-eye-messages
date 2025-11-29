@@ -31,30 +31,30 @@ struct ARXKey {
     pub rounds: Vec<ARXRound>,
 }
 
-pub struct ARXCipherDecryptContext<'a> {
+pub struct ARXCipherDecryptContext {
     key: ARXKey,
-    ctx: &'a ARXCipherContext,
+    ciphertexts: MessageList,
 }
 
-impl CipherDecryptionContext for ARXCipherDecryptContext<'_> {
+impl CipherDecryptionContext for ARXCipherDecryptContext {
     fn get_current_key_net(&self) -> Vec<u8> {
         self.key.encode_to_vec()
     }
 
     fn get_plaintext_name(&self, message_index: usize) -> String {
-        self.ctx.ciphertexts[message_index].name.clone()
+        self.ciphertexts[message_index].name.clone()
     }
 
     fn get_plaintext_count(&self) -> usize {
-        self.ctx.ciphertexts.len()
+        self.ciphertexts.len()
     }
 
     fn get_plaintext_len(&self, message_index: usize) -> usize {
-        self.ctx.ciphertexts[message_index].data.len()
+        self.ciphertexts[message_index].data.len()
     }
 
     fn decrypt(&mut self, message_index: usize, unit_index: usize) -> u8 {
-        let mut byte = self.ctx.ciphertexts[message_index].data[unit_index];
+        let mut byte = self.ciphertexts[message_index].data[unit_index];
 
         for round in &self.key.rounds {
             byte = byte.wrapping_add(round.add as u8).rotate_right(round.rot) ^ (round.xor as u8);
@@ -72,7 +72,7 @@ pub struct ARXCipherContext {
 }
 
 impl ARXCipherContext {
-    fn permute_additional_round(&self, r: usize, r_max: usize, decrypt_ctx: &mut ARXCipherDecryptContext, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext, u32) -> bool) -> bool {
+    fn permute_additional_round<KC: FnMut(&mut ARXCipherDecryptContext), OC: FnMut(&mut ARXCipherDecryptContext, u32) -> bool>(&self, r: usize, r_max: usize, decrypt_ctx: &mut ARXCipherDecryptContext, key_callback: &mut KC, occasional_callback: &mut OC) -> bool {
         // TODO maybe do macro for this entire pattern, including the part in
         //      the other method?
         if r == unsafe { r_max.unchecked_sub(1) } {
@@ -110,6 +110,8 @@ impl ARXCipherContext {
 }
 
 impl CipherContext for ARXCipherContext {
+    type DecryptionContext = ARXCipherDecryptContext;
+
     fn get_total_keys(&self) -> Integer {
         if self.round_count == 0 { return Integer::new(); }
         let mut total = Integer::from(((self.a_max - self.a_min) as u64 + 1) * 2048);
@@ -117,17 +119,13 @@ impl CipherContext for ARXCipherContext {
         total
     }
 
-    fn get_ciphertexts(&self) -> &MessageList {
-        &self.ciphertexts
-    }
-
-    fn permute_keys_interruptible(&self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext, u32) -> bool) {
+    fn permute_keys_interruptible<KC: FnMut(&mut ARXCipherDecryptContext), OC: FnMut(&mut ARXCipherDecryptContext, u32) -> bool>(&self, key_callback: &mut KC, occasional_callback: &mut OC) {
         let r_max: usize = self.round_count;
         if r_max == 0 { return }
 
         let mut decrypt_ctx = ARXCipherDecryptContext {
             key: ARXKey { rounds: Vec::with_capacity(r_max) },
-            ctx: &self,
+            ciphertexts: self.ciphertexts.clone(), // FIXME figure out how to make this clone unnecesary
         };
         decrypt_ctx.key.rounds.resize_with(r_max, ARXRound::default);
 

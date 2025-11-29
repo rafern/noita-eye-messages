@@ -51,15 +51,16 @@ pub trait CipherDecryptionContext {
 }
 
 pub trait CipherContext: Send {
+    type DecryptionContext: CipherDecryptionContext;
+
     fn get_total_keys(&self) -> Integer;
-    fn get_ciphertexts(&self) -> &MessageList;
     /**
      * key_callback must be called for each key
      * occasional_callback must be called at least every u32::MAX keys
      */
-    fn permute_keys_interruptible(&self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext), occasional_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext, u32) -> bool);
+    fn permute_keys_interruptible<KC: FnMut(&mut Self::DecryptionContext), OC: FnMut(&mut Self::DecryptionContext, u32) -> bool>(&self, key_callback: &mut KC, occasional_callback: &mut OC);
 
-    fn permute_keys(&self, key_callback: &mut dyn FnMut(&mut dyn CipherDecryptionContext)) {
+    fn permute_keys<KC: FnMut(&mut Self::DecryptionContext)>(&self, key_callback: &mut KC) {
         self.permute_keys_interruptible(key_callback, &mut |_, _| { true });
     }
 }
