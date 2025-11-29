@@ -65,7 +65,6 @@ impl CipherDecryptionContext for ARXCipherDecryptContext {
 }
 
 pub struct ARXCipherContext {
-    ciphertexts: MessageList,
     a_min: u32,
     a_max: u32,
     round_count: usize,
@@ -119,13 +118,13 @@ impl CipherContext for ARXCipherContext {
         total
     }
 
-    fn permute_keys_interruptible<KC: FnMut(&mut ARXCipherDecryptContext), OC: FnMut(&mut ARXCipherDecryptContext, u32) -> bool>(&self, key_callback: &mut KC, occasional_callback: &mut OC) {
+    fn permute_keys_interruptible<KC: FnMut(&mut ARXCipherDecryptContext), OC: FnMut(&mut ARXCipherDecryptContext, u32) -> bool>(&self, ciphertexts: &MessageList, key_callback: &mut KC, occasional_callback: &mut OC) {
         let r_max: usize = self.round_count;
         if r_max == 0 { return }
 
         let mut decrypt_ctx = ARXCipherDecryptContext {
             key: ARXKey { rounds: Vec::with_capacity(r_max) },
-            ciphertexts: self.ciphertexts.clone(), // FIXME figure out how to make this clone unnecesary
+            ciphertexts: ciphertexts.clone(),
         };
         decrypt_ctx.key.rounds.resize_with(r_max, ARXRound::default);
 
@@ -177,12 +176,11 @@ impl Cipher for ARXCipher {
 
     fn get_max_parallelism(&self) -> u32 { 256 }
 
-    fn create_context_parallel(&self, ciphertexts: MessageList, worker_id: u32, worker_total: u32) -> <ARXCipher as Cipher>::Context {
+    fn create_context_parallel(&self, worker_id: u32, worker_total: u32) -> <ARXCipher as Cipher>::Context {
         let (a_min, a_max) = get_worker_slice::<u32>(255, worker_id, worker_total);
 
         ARXCipherContext {
             round_count: self.round_count,
-            ciphertexts,
             a_min,
             a_max,
         }

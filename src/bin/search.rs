@@ -103,8 +103,8 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
     }
 }
 
-fn search_task(worker_id: u32, ctx: impl CipherContext, cond: &UserCondition, languages: &Vec<UnitFrequency>, _log_semaphore: &Semaphore, tx: SyncSender<TaskPacket>) {
-    ctx.permute_keys_interruptible(&mut |decrypt_ctx| {
+fn search_task(worker_id: u32, messages: &MessageList, ctx: impl CipherContext, cond: &UserCondition, languages: &Vec<UnitFrequency>, _log_semaphore: &Semaphore, tx: SyncSender<TaskPacket>) {
+    ctx.permute_keys_interruptible(messages, &mut |decrypt_ctx| {
         let mut pt_freq_dist: Option<UnitFrequency> = None;
 
         if !cond.eval_condition(&mut |name:&str, args:Vec<f64>| -> Option<f64> {
@@ -190,7 +190,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut contexts = Vec::new();
 
         for worker_id in 0..worker_total {
-            let context = cipher.create_context_parallel(messages.clone(), worker_id, worker_total);
+            let context = cipher.create_context_parallel(worker_id, worker_total);
             keys_total += context.get_total_keys();
             contexts.push(context);
         }
@@ -202,13 +202,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut worker_id = 0;
         for context in contexts {
             let worker_id_clone = worker_id.clone();
+            let messages = &messages;
             let cond = &cond;
             let languages = &languages;
             let log_semaphore = &log_semaphore;
             let tx = tx.clone();
 
             scope.spawn(move || {
-                search_task(worker_id_clone, context, cond, languages, log_semaphore, tx);
+                search_task(worker_id_clone, messages, context, cond, languages, log_semaphore, tx);
             });
 
             worker_id += 1;

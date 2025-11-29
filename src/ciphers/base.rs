@@ -58,10 +58,10 @@ pub trait CipherContext: Send {
      * key_callback must be called for each key
      * occasional_callback must be called at least every u32::MAX keys
      */
-    fn permute_keys_interruptible<KC: FnMut(&mut Self::DecryptionContext), OC: FnMut(&mut Self::DecryptionContext, u32) -> bool>(&self, key_callback: &mut KC, occasional_callback: &mut OC);
+    fn permute_keys_interruptible<KC: FnMut(&mut Self::DecryptionContext), OC: FnMut(&mut Self::DecryptionContext, u32) -> bool>(&self, ciphertexts: &MessageList, key_callback: &mut KC, occasional_callback: &mut OC);
 
-    fn permute_keys<KC: FnMut(&mut Self::DecryptionContext)>(&self, key_callback: &mut KC) {
-        self.permute_keys_interruptible(key_callback, &mut |_, _| { true });
+    fn permute_keys<KC: FnMut(&mut Self::DecryptionContext)>(&self, ciphertexts: &MessageList, key_callback: &mut KC) {
+        self.permute_keys_interruptible(ciphertexts, key_callback, &mut |_, _| { true });
     }
 }
 
@@ -75,10 +75,10 @@ pub trait Cipher {
     type Context: CipherContext;
 
     fn get_max_parallelism(&self) -> u32;
-    fn create_context_parallel(&self, ciphertexts: MessageList, worker_id: u32, worker_total: u32) -> Self::Context;
+    fn create_context_parallel(&self, worker_id: u32, worker_total: u32) -> Self::Context;
     fn net_key_to_string(&self, net_key: Vec<u8>) -> String;
 
-    fn create_context(&self, ciphertexts: MessageList) -> Self::Context {
-        self.create_context_parallel(ciphertexts, 0, 1)
+    fn create_context(&self) -> Self::Context {
+        self.create_context_parallel(0, 1)
     }
 }
