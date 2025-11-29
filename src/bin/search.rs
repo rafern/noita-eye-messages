@@ -1,3 +1,4 @@
+use evalexpr::{Context, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, Value};
 use prost::Message;
 use clap::Parser;
 use noita_eye_messages::analysis::freq::UnitFrequency;
@@ -102,36 +103,89 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
     }
 }
 
+struct CustomEvalContext<'a, T: CipherCodecContext> {
+    pub pt_freq_dist: Option<UnitFrequency>,
+    pub codec_ctx: &'a mut T,
+    pub languages: &'a Vec<UnitFrequency>,
+}
+
+impl<T: CipherCodecContext> Context for CustomEvalContext<'_, T> {
+    type NumericTypes = DefaultNumericTypes;
+
+    fn get_value(&self, _: &str) -> Option<&Value<<Self as Context>::NumericTypes>> { None }
+
+    // XXX evalexpr is not supported because of exactly this error:
+    fn call_function(&mut self, identifier: &str, argument: &Value<<Self as Context>::NumericTypes>) -> Result<Value<<Self as Context>::NumericTypes>, EvalexprError<<Self as Context>::NumericTypes>> {
+        match identifier {
+            "pt" => {
+                let arguments = argument.as_tuple()?;
+
+                if let Value::Int(m) = &arguments[0] {
+                    let m = *m as usize;
+                    if m > self.codec_ctx.get_plaintext_count() {
+                        return Err(EvalexprError::OutOfBoundsAccess)
+                    }
+
+                    if let Value::Int(u) = &arguments[1] {
+                        let u = *u as usize;
+                        if u > self.codec_ctx.get_plaintext_len(m) {
+                            Err(EvalexprError::OutOfBoundsAccess)
+                        } else {
+                            Ok(Value::Int(self.codec_ctx.decrypt(m, u) as i64))
+                        }
+                    } else {
+                        Err(EvalexprError::expected_int(arguments[1].clone()))
+                    }
+                } else {
+                    Err(EvalexprError::expected_int(arguments[0].clone()))
+                }
+            },
+            "pt_freq_dist_error" => {
+                if let Value::Int(l) = argument {
+                    let l = *l as usize;
+                    if l >= self.languages.len() {
+                        Err(EvalexprError::OutOfBoundsAccess)
+                    } else {
+                        Ok(Value::Float(self.languages[l].get_error(cached_var!(self.pt_freq_dist, {
+                            UnitFrequency::from_messages(&self.codec_ctx.get_all_plaintexts())
+                        }))))
+                    }
+                } else {
+                    Err(EvalexprError::expected_int(argument.clone()))
+                }
+            },
+            _ => Err(EvalexprError::FunctionIdentifierNotFound(String::from(identifier)))
+        }
+    }
+
+    fn are_builtin_functions_disabled(&self) -> bool { false }
+
+    fn set_builtin_functions_disabled(&mut self, disabled: bool) -> Result<(), EvalexprError<<Self as Context>::NumericTypes>> {
+        if disabled {
+            Err(EvalexprError::BuiltinFunctionsCannotBeDisabled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl<T: CipherCodecContext> ContextWithMutableVariables for CustomEvalContext<'_, T> {}
+
 fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWorkerContext, cond: &UserCondition, languages: &Vec<UnitFrequency>, tx: SyncSender<TaskPacket>) {
     worker_ctx.permute_keys_interruptible(messages, &mut |codec_ctx| {
-        let mut pt_freq_dist: Option<UnitFrequency> = None;
+        let mut eval_context = CustomEvalContext { pt_freq_dist: None, codec_ctx, languages };
+        let val = cond.node.eval_with_context_mut(&mut eval_context).unwrap();
 
-        if !cond.eval_condition(&mut |name:&str, args:Vec<f64>| -> Option<f64> {
-            match name {
-                "pt" => {
-                    if args.len() < 2 { return None }
+        let val_bool = match val {
+            evalexpr::Value::String(_) => panic!("unexpected string"),
+            evalexpr::Value::Float(f) => f > 0.0,
+            evalexpr::Value::Int(i) => i > 0,
+            evalexpr::Value::Boolean(x) => x,
+            evalexpr::Value::Tuple(_) => panic!("unexpected tuple"),
+            evalexpr::Value::Empty => panic!("unexpected empty"),
+        };
 
-                    let m = args[0] as usize;
-                    if m > codec_ctx.get_plaintext_count() { return None }
-
-                    let u = args[1] as usize;
-                    if u > codec_ctx.get_plaintext_len(m) { return None }
-
-                    Some(codec_ctx.decrypt(m, u) as f64)
-                },
-                "pt_freq_dist_error" => {
-                    if args.len() < 1 { return None }
-
-                    let l = args[0] as usize;
-                    if l >= languages.len() { return None }
-
-                    Some(languages[l].get_error(cached_var!(pt_freq_dist, {
-                        UnitFrequency::from_messages(&codec_ctx.get_all_plaintexts())
-                    })))
-                },
-                _ => None,
-            }
-        }).unwrap() { return }
+        if !val_bool { return }
 
         tx.send(TaskPacket::Match { net_key: codec_ctx.get_current_key_net() }).unwrap();
     }, &mut |_codec_ctx, keys| {
