@@ -7,12 +7,12 @@ use noita_eye_messages::ciphers::deserialise_cipher;
 use noita_eye_messages::data::key_dump::KeyDumpMeta;
 use noita_eye_messages::utils::user_condition::UserCondition;
 use rug::{Integer, Rational};
+use std::cell::OnceCell;
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroU32;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
-use noita_eye_messages::cached_var;
 use noita_eye_messages::utils::threading::get_parallelism;
 use noita_eye_messages::data::message::MessageList;
 use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, format_seconds_left, print_message};
@@ -104,8 +104,8 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
 }
 
 struct CustomEvalContext<'a, T: CipherCodecContext> {
-    pub pt_freq_dist: Option<UnitFrequency>,
-    pub codec_ctx: &'a mut T,
+    pub pt_freq_dist: OnceCell<UnitFrequency>,
+    pub codec_ctx: &'a T,
     pub languages: &'a Vec<UnitFrequency>,
 }
 
@@ -114,8 +114,7 @@ impl<T: CipherCodecContext> Context for CustomEvalContext<'_, T> {
 
     fn get_value(&self, _: &str) -> Option<&Value<<Self as Context>::NumericTypes>> { None }
 
-    // XXX evalexpr is not supported because of exactly this error:
-    fn call_function(&mut self, identifier: &str, argument: &Value<<Self as Context>::NumericTypes>) -> Result<Value<<Self as Context>::NumericTypes>, EvalexprError<<Self as Context>::NumericTypes>> {
+    fn call_function(&self, identifier: &str, argument: &Value<<Self as Context>::NumericTypes>) -> Result<Value<<Self as Context>::NumericTypes>, EvalexprError<<Self as Context>::NumericTypes>> {
         match identifier {
             "pt" => {
                 let arguments = argument.as_tuple()?;
@@ -146,7 +145,7 @@ impl<T: CipherCodecContext> Context for CustomEvalContext<'_, T> {
                     if l >= self.languages.len() {
                         Err(EvalexprError::OutOfBoundsAccess)
                     } else {
-                        Ok(Value::Float(self.languages[l].get_error(cached_var!(self.pt_freq_dist, {
+                        Ok(Value::Float(self.languages[l].get_error(&self.pt_freq_dist.get_or_init(|| {
                             UnitFrequency::from_messages(&self.codec_ctx.get_all_plaintexts())
                         }))))
                     }
@@ -173,7 +172,8 @@ impl<T: CipherCodecContext> ContextWithMutableVariables for CustomEvalContext<'_
 
 fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWorkerContext, cond: &UserCondition, languages: &Vec<UnitFrequency>, tx: SyncSender<TaskPacket>) {
     worker_ctx.permute_keys_interruptible(messages, &mut |codec_ctx| {
-        let mut eval_context = CustomEvalContext { pt_freq_dist: None, codec_ctx, languages };
+        let mut eval_context = CustomEvalContext { pt_freq_dist: OnceCell::new(), codec_ctx, languages };
+
         let val = cond.node.eval_with_context_mut(&mut eval_context).unwrap();
 
         let val_bool = match val {

@@ -71,7 +71,7 @@ impl CipherCodecContext for ARXCodecContext {
         self.ciphertexts[message_index].data.len()
     }
 
-    fn decrypt(&mut self, message_index: usize, unit_index: usize) -> u8 {
+    fn decrypt(&self, message_index: usize, unit_index: usize) -> u8 {
         let mut byte = self.ciphertexts[message_index].data[unit_index];
 
         for round in &self.key.rounds {

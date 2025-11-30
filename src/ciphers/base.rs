@@ -29,10 +29,13 @@ pub trait CipherCodecContext {
     fn get_plaintext_name(&self, message_index: usize) -> String;
     fn get_plaintext_count(&self) -> usize;
     fn get_plaintext_len(&self, message_index: usize) -> usize;
-    fn decrypt(&mut self, message_index: usize, unit_index: usize) -> u8;
+    /**
+     * NOTE: use interior mutability if you need to cache results. For example, a cipher that depends on previous values
+     */
+    fn decrypt(&self, message_index: usize, unit_index: usize) -> u8;
     // TODO encrypt
 
-    fn get_plaintext(&mut self, message_index: usize) -> Message {
+    fn get_plaintext(&self, message_index: usize) -> Message {
         let mut data = StackVec::default();
         for i in 0..self.get_plaintext_len(message_index) {
             data.push(self.decrypt(message_index, i));
@@ -41,7 +44,7 @@ pub trait CipherCodecContext {
         Message { name: self.get_plaintext_name(message_index), data }
     }
 
-    fn get_all_plaintexts(&mut self) -> MessageList {
+    fn get_all_plaintexts(&self) -> MessageList {
         let mut messages = MessageList::default();
         for m in 0..self.get_plaintext_count() {
             messages.push(self.get_plaintext(m));
