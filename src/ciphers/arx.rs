@@ -71,7 +71,7 @@ impl CipherCodecContext for ARXCodecContext {
         self.ciphertexts[message_index].data.len()
     }
 
-    fn decrypt(&mut self, message_index: usize, unit_index: usize) -> u8 {
+    fn decrypt(&self, message_index: usize, unit_index: usize) -> u8 {
         let mut byte = self.ciphertexts[message_index].data[unit_index];
 
         for round in &self.key.rounds {
@@ -89,7 +89,7 @@ pub struct ARXWorkerContext {
 }
 
 impl ARXWorkerContext {
-    fn permute_additional_round<KC: FnMut(&mut ARXCodecContext), CC: FnMut(&mut ARXCodecContext, u32) -> bool>(&self, r: usize, r_max: usize, codec_ctx: &mut ARXCodecContext, key_callback: &mut KC, chunk_callback: &mut CC) -> bool {
+    fn permute_additional_round<KC: FnMut(&ARXCodecContext), CC: FnMut(&ARXCodecContext, u32) -> bool>(&self, r: usize, r_max: usize, codec_ctx: &mut ARXCodecContext, key_callback: &mut KC, chunk_callback: &mut CC) -> bool {
         // TODO maybe do macro for this entire pattern, including the part in
         //      the other method?
         if r == unsafe { r_max.unchecked_sub(1) } {
@@ -122,7 +122,7 @@ impl CipherWorkerContext for ARXWorkerContext {
         total
     }
 
-    fn permute_keys_interruptible<KC: FnMut(&mut ARXCodecContext), CC: FnMut(&mut ARXCodecContext, u32) -> bool>(&self, ciphertexts: &MessageList, key_callback: &mut KC, chunk_callback: &mut CC) {
+    fn permute_keys_interruptible<KC: FnMut(&ARXCodecContext), CC: FnMut(&ARXCodecContext, u32) -> bool>(&self, ciphertexts: &MessageList, key_callback: &mut KC, chunk_callback: &mut CC) {
         let r_max: usize = self.round_count;
         if r_max == 0 { return }
 
