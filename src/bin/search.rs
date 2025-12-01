@@ -6,12 +6,12 @@ use noita_eye_messages::ciphers::deserialise_cipher;
 use noita_eye_messages::data::key_dump::KeyDumpMeta;
 use noita_eye_messages::utils::user_condition::UserCondition;
 use rug::{Integer, Rational};
+use std::cell::OnceCell;
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroU32;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
-use noita_eye_messages::cached_var;
 use noita_eye_messages::utils::threading::get_parallelism;
 use noita_eye_messages::data::message::MessageList;
 use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, format_seconds_left, print_message};
@@ -104,7 +104,7 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
 
 fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWorkerContext, cond: &UserCondition, languages: &Vec<UnitFrequency>, tx: SyncSender<TaskPacket>) {
     worker_ctx.permute_keys_interruptible(messages, &mut |codec_ctx| {
-        let mut pt_freq_dist: Option<UnitFrequency> = None;
+        let pt_freq_dist = OnceCell::<UnitFrequency>::new();
 
         if !cond.eval_condition(&mut |name:&str, args:Vec<f64>| -> Option<f64> {
             match name {
@@ -125,7 +125,7 @@ fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWo
                     let l = args[0] as usize;
                     if l >= languages.len() { return None }
 
-                    Some(languages[l].get_error(cached_var!(pt_freq_dist, {
+                    Some(languages[l].get_error(pt_freq_dist.get_or_init(|| {
                         UnitFrequency::from_messages(&codec_ctx.get_all_plaintexts())
                     })))
                 },
