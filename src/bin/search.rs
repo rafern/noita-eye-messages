@@ -172,22 +172,18 @@ impl<T: CipherCodecContext> ContextWithMutableVariables for CustomEvalContext<'_
 
 fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWorkerContext, cond: &UserCondition, languages: &Vec<UnitFrequency>, tx: SyncSender<TaskPacket>) {
     worker_ctx.permute_keys_interruptible(messages, &mut |codec_ctx| {
-        let mut eval_context = CustomEvalContext { pt_freq_dist: OnceCell::new(), codec_ctx, languages };
+        let eval_context = CustomEvalContext { pt_freq_dist: OnceCell::new(), codec_ctx, languages };
 
-        let val = cond.node.eval_with_context_mut(&mut eval_context).unwrap();
-
-        let val_bool = match val {
+        if !match cond.node.eval_with_context(&eval_context).unwrap() {
             evalexpr::Value::String(_) => panic!("unexpected string"),
             evalexpr::Value::Float(f) => f > 0.0,
             evalexpr::Value::Int(i) => i > 0,
             evalexpr::Value::Boolean(x) => x,
             evalexpr::Value::Tuple(_) => panic!("unexpected tuple"),
             evalexpr::Value::Empty => panic!("unexpected empty"),
-        };
+        } { return }
 
-        if !val_bool { return }
-
-        tx.send(TaskPacket::Match { net_key: codec_ctx.get_current_key_net() }).unwrap();
+        tx.send(TaskPacket::Match { net_key: eval_context.codec_ctx.get_current_key_net() }).unwrap();
     }, &mut |_codec_ctx, keys| {
         tx.send(TaskPacket::Progress { keys }).unwrap();
         true
