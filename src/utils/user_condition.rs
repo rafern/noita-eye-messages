@@ -1,29 +1,23 @@
 use std::error::Error;
 
-use fasteval::{Compiler, Evaler, Instruction, Parser, Slab, eval_compiled_ref};
+use cel::{Context, Program};
 
 pub struct UserCondition {
-    slab: Slab,
-    compiled: Instruction,
+    program: Program,
 }
 
 impl UserCondition {
     pub fn new(expr_str: &String) -> Result<Self, Box<dyn Error>> {
-        let parser = Parser::new();
-        let mut slab = Slab::new();
-        let compiled = parser.parse(expr_str, &mut slab.ps)?.from(&slab.ps).compile(&slab.ps, &mut slab.cs);
-        Ok(UserCondition { slab, compiled })
+        Ok(UserCondition { program: Program::compile(expr_str)? })
     }
 
-    pub fn eval(&self, var_cb: &mut impl FnMut(&str, Vec<f64>) -> Option<f64>) -> Result<f64, Box<dyn Error>> {
-        #[allow(unexpected_cfgs)] // FIXME why is this warning showing up?
-        let val = eval_compiled_ref!(&self.compiled, &self.slab, var_cb);
-        Ok(val)
-    }
-
-    pub fn eval_condition(&self, var_cb: &mut impl FnMut(&str, Vec<f64>) -> Option<f64>) -> Result<bool, Box<dyn Error>> {
-        #[allow(unexpected_cfgs)] // FIXME why is this warning showing up?
-        let val = eval_compiled_ref!(&self.compiled, &self.slab, var_cb);
-        Ok(val > 0.0)
+    pub fn eval_condition(&self, ctx: &Context) -> Result<bool, Box<dyn Error>> {
+        match self.program.execute(ctx)? {
+            cel::Value::Int(x) => Ok(x > 0),
+            cel::Value::UInt(x) => Ok(x > 0),
+            cel::Value::Float(x) => Ok(x > 0.0),
+            cel::Value::Bool(x) => Ok(x),
+            _ => Err("Must evaluate to a boolean or number".into()),
+        }
     }
 }

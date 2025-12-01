@@ -1,3 +1,4 @@
+use cel::{Context, FunctionContext, ResolveResult, Value};
 use prost::Message;
 use clap::Parser;
 use noita_eye_messages::analysis::freq::UnitFrequency;
@@ -105,33 +106,32 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
 fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWorkerContext, cond: &UserCondition, languages: &Vec<UnitFrequency>, tx: SyncSender<TaskPacket>) {
     worker_ctx.permute_keys_interruptible(messages, &mut |codec_ctx| {
         let pt_freq_dist = OnceCell::<UnitFrequency>::new();
-
-        if !cond.eval_condition(&mut |name:&str, args:Vec<f64>| -> Option<f64> {
-            match name {
-                "pt" => {
-                    if args.len() < 2 { return None }
-
-                    let m = args[0] as usize;
-                    if m > codec_ctx.get_plaintext_count() { return None }
-
-                    let u = args[1] as usize;
-                    if u > codec_ctx.get_plaintext_len(m) { return None }
-
-                    Some(codec_ctx.decrypt(m, u) as f64)
-                },
-                "pt_freq_dist_error" => {
-                    if args.len() < 1 { return None }
-
-                    let l = args[0] as usize;
-                    if l >= languages.len() { return None }
-
-                    Some(languages[l].get_error(pt_freq_dist.get_or_init(|| {
-                        UnitFrequency::from_messages(&codec_ctx.get_all_plaintexts())
-                    })))
-                },
-                _ => None,
+        let mut ctx = Context::default();
+        ctx.add_function("pt", |ftx: &FunctionContext, m: u64, u: u64| -> ResolveResult {
+            let m = m as usize;
+            if m > codec_ctx.get_plaintext_count() {
+                return ftx.error("Message index out of bounds").into()
             }
-        }).unwrap() { return }
+
+            let u = u as usize;
+            if u > codec_ctx.get_plaintext_len(m) {
+                return ftx.error("Unit index out of bounds").into()
+            }
+
+            Value::UInt(codec_ctx.decrypt(m, u) as u64).into()
+        });
+        ctx.add_function("pt_freq_dist_error", |ftx: &FunctionContext, l: u64| {
+            let l = l as usize;
+            if l >= languages.len() {
+                return ftx.error("Language index out of bounds").into()
+            }
+
+            Value::Float(languages[l].get_error(pt_freq_dist.get_or_init(|| {
+                UnitFrequency::from_messages(&codec_ctx.get_all_plaintexts())
+            }))).into()
+        });
+
+        if !cond.eval_condition(&ctx).unwrap() { return }
 
         tx.send(TaskPacket::Match { net_key: codec_ctx.get_current_key_net() }).unwrap();
     }, &mut |_codec_ctx, keys| {
