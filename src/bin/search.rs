@@ -144,6 +144,24 @@ impl<T: CipherCodecContext> ContextProvider for CustomEvalContext<'_, T> {
                     Ok(0.0)
                 }
             },
+            "lesser_than" => {
+                if args.len() != 2 {
+                    Err(FuncEvalError::NumberArgs(2))
+                } else if args[0] < args[1] {
+                    Ok(1.0)
+                } else {
+                    Ok(0.0)
+                }
+            },
+            "lesser_than_equals" => {
+                if args.len() != 2 {
+                    Err(FuncEvalError::NumberArgs(2))
+                } else if args[0] <= args[1] {
+                    Ok(1.0)
+                } else {
+                    Ok(0.0)
+                }
+            },
             &_ => Err(FuncEvalError::UnknownFunction),
         }
     }
