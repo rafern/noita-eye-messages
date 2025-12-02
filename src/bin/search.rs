@@ -1,15 +1,16 @@
+use meval::{Context, Expr};
 use prost::Message;
 use clap::Parser;
 use noita_eye_messages::analysis::freq::UnitFrequency;
 use noita_eye_messages::ciphers::base::{Cipher, CipherWorkerContext, CipherCodecContext};
 use noita_eye_messages::ciphers::deserialise_cipher;
 use noita_eye_messages::data::key_dump::KeyDumpMeta;
-use noita_eye_messages::utils::user_condition::UserCondition;
 use rug::{Integer, Rational};
 use std::cell::OnceCell;
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroU32;
+use std::str::FromStr;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 use noita_eye_messages::utils::threading::get_parallelism;
@@ -102,36 +103,31 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
     }
 }
 
-fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWorkerContext, cond: &UserCondition, languages: &Vec<UnitFrequency>, tx: SyncSender<TaskPacket>) {
+fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWorkerContext, cond: &Expr, languages: &Vec<UnitFrequency>, tx: SyncSender<TaskPacket>) {
     worker_ctx.permute_keys_interruptible(messages, &mut |codec_ctx| {
         let pt_freq_dist = OnceCell::<UnitFrequency>::new();
 
-        if !cond.eval_condition(&mut |name:&str, args:Vec<f64>| -> Option<f64> {
-            match name {
-                "pt" => {
-                    if args.len() < 2 { return None }
+        let mut cond_ctx = Context::new();
+        cond_ctx.func2("pt", |m: f64, u: f64| {
+            let m = m as usize;
+            if m > codec_ctx.get_plaintext_count() { panic!("Message index out of bounds") }
+            let u = u as usize;
+            if u > codec_ctx.get_plaintext_len(m) { panic!("Unit index out of bounds") }
+            codec_ctx.decrypt(m, u) as f64
+        });
+        cond_ctx.func("pt_freq_dist_error", |l: f64| {
+            let l = l as usize;
+            if l >= languages.len() { panic!("Language index out of bounds") }
 
-                    let m = args[0] as usize;
-                    if m > codec_ctx.get_plaintext_count() { return None }
+            languages[l].get_error(pt_freq_dist.get_or_init(|| {
+                UnitFrequency::from_messages(&codec_ctx.get_all_plaintexts())
+            }))
+        });
+        cond_ctx.func2("equals", |a: f64, b: f64| {
+            if a == b { 1.0 } else { 0.0 }
+        });
 
-                    let u = args[1] as usize;
-                    if u > codec_ctx.get_plaintext_len(m) { return None }
-
-                    Some(codec_ctx.decrypt(m, u) as f64)
-                },
-                "pt_freq_dist_error" => {
-                    if args.len() < 1 { return None }
-
-                    let l = args[0] as usize;
-                    if l >= languages.len() { return None }
-
-                    Some(languages[l].get_error(pt_freq_dist.get_or_init(|| {
-                        UnitFrequency::from_messages(&codec_ctx.get_all_plaintexts())
-                    })))
-                },
-                _ => None,
-            }
-        }).unwrap() { return }
+        if cond.eval_with_context(cond_ctx).unwrap() <= 0.0 { return }
 
         tx.send(TaskPacket::Match { net_key: codec_ctx.get_current_key_net() }).unwrap();
     }, &mut |_codec_ctx, keys| {
@@ -145,7 +141,7 @@ fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWo
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let cond = UserCondition::new(&args.condition)?;
+    let cond = Expr::from_str(&args.condition)?;
 
     let languages = import_csv_languages_or_exit(&args.language);
 
