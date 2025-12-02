@@ -1,4 +1,4 @@
-use meval::{Context, Expr};
+use meval::{ContextProvider, Expr, FuncEvalError};
 use prost::Message;
 use clap::Parser;
 use noita_eye_messages::analysis::freq::UnitFrequency;
@@ -103,33 +103,61 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
     }
 }
 
+struct CustomEvalContext<'a, T: CipherCodecContext> {
+    pub pt_freq_dist: OnceCell<UnitFrequency>,
+    pub codec_ctx: &'a T,
+    pub languages: &'a Vec<UnitFrequency>,
+}
+
+impl<T: CipherCodecContext> ContextProvider for CustomEvalContext<'_, T> {
+    fn eval_func(&self, name: &str, args: &[f64]) -> Result<f64, FuncEvalError> {
+        match name {
+            "pt" => {
+                if args.len() != 2 {
+                    return Err(FuncEvalError::NumberArgs(2));
+                }
+
+                let m = args[0] as usize;
+                if m > self.codec_ctx.get_plaintext_count() { panic!("Message index out of bounds") }
+                let u = args[1] as usize;
+                if u > self.codec_ctx.get_plaintext_len(m) { panic!("Unit index out of bounds") }
+                Ok(self.codec_ctx.decrypt(m, u) as f64)
+            },
+            "pt_freq_dist_error" => {
+                if args.len() != 1 {
+                    return Err(FuncEvalError::NumberArgs(1));
+                }
+
+                let l = args[0] as usize;
+                if l >= self.languages.len() { panic!("Language index out of bounds") }
+
+                Ok(self.languages[l].get_error(self.pt_freq_dist.get_or_init(|| {
+                    UnitFrequency::from_messages(&self.codec_ctx.get_all_plaintexts())
+                })))
+            },
+            "equals" => {
+                if args.len() != 2 {
+                    Err(FuncEvalError::NumberArgs(2))
+                } else if args[0] == args[1] {
+                    Ok(1.0)
+                } else {
+                    Ok(0.0)
+                }
+            },
+            &_ => Err(FuncEvalError::UnknownFunction),
+        }
+    }
+}
+
 fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWorkerContext, cond: &Expr, languages: &Vec<UnitFrequency>, tx: SyncSender<TaskPacket>) {
     worker_ctx.permute_keys_interruptible(messages, &mut |codec_ctx| {
-        let pt_freq_dist = OnceCell::<UnitFrequency>::new();
-
-        let mut cond_ctx = Context::new();
-        cond_ctx.func2("pt", |m: f64, u: f64| {
-            let m = m as usize;
-            if m > codec_ctx.get_plaintext_count() { panic!("Message index out of bounds") }
-            let u = u as usize;
-            if u > codec_ctx.get_plaintext_len(m) { panic!("Unit index out of bounds") }
-            codec_ctx.decrypt(m, u) as f64
-        });
-        cond_ctx.func("pt_freq_dist_error", |l: f64| {
-            let l = l as usize;
-            if l >= languages.len() { panic!("Language index out of bounds") }
-
-            languages[l].get_error(pt_freq_dist.get_or_init(|| {
-                UnitFrequency::from_messages(&codec_ctx.get_all_plaintexts())
-            }))
-        });
-        cond_ctx.func2("equals", |a: f64, b: f64| {
-            if a == b { 1.0 } else { 0.0 }
-        });
-
-        if cond.eval_with_context(cond_ctx).unwrap() <= 0.0 { return }
-
-        tx.send(TaskPacket::Match { net_key: codec_ctx.get_current_key_net() }).unwrap();
+        if cond.eval_with_context(CustomEvalContext {
+            pt_freq_dist: OnceCell::<UnitFrequency>::new(),
+            codec_ctx,
+            languages,
+        }).unwrap() > 0.0 {
+            tx.send(TaskPacket::Match { net_key: codec_ctx.get_current_key_net() }).unwrap();
+        }
     }, &mut |_codec_ctx, keys| {
         tx.send(TaskPacket::Progress { keys }).unwrap();
         true
