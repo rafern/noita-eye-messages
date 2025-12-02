@@ -109,59 +109,85 @@ struct CustomEvalContext<'a, T: CipherCodecContext> {
     pub languages: &'a Vec<UnitFrequency>,
 }
 
+impl<'a, T: CipherCodecContext> CustomEvalContext<'a, T> {
+    #[inline(never)]
+    pub fn new(codec_ctx: &'a T, languages: &'a Vec<UnitFrequency>) -> Self {
+        CustomEvalContext {
+            pt_freq_dist: OnceCell::<UnitFrequency>::new(),
+            codec_ctx,
+            languages,
+        }
+    }
+}
+
+#[inline(never)]
+fn eval_pt(codec_ctx: &impl CipherCodecContext, args: &[f64]) -> Result<f64, FuncEvalError> {
+    if args.len() != 2 {
+        return Err(FuncEvalError::NumberArgs(2));
+    }
+
+    let m = args[0] as usize;
+    if m > codec_ctx.get_plaintext_count() { panic!("Message index out of bounds") }
+    let u = args[1] as usize;
+    if u > codec_ctx.get_plaintext_len(m) { panic!("Unit index out of bounds") }
+    Ok(codec_ctx.decrypt(m, u) as f64)
+}
+
+#[inline(never)]
+fn eval_pt_freq_dist_error(codec_ctx: &impl CipherCodecContext, languages: &Vec<UnitFrequency>, pt_freq_dist: &OnceCell<UnitFrequency>, args: &[f64]) -> Result<f64, FuncEvalError> {
+    if args.len() != 1 {
+        return Err(FuncEvalError::NumberArgs(1));
+    }
+
+    let l = args[0] as usize;
+    if l >= languages.len() { panic!("Language index out of bounds") }
+
+    Ok(languages[l].get_error(pt_freq_dist.get_or_init(|| {
+        UnitFrequency::from_messages(&codec_ctx.get_all_plaintexts())
+    })))
+}
+
+#[inline(never)]
+fn eval_equals(args: &[f64]) -> Result<f64, FuncEvalError> {
+    if args.len() != 2 {
+        Err(FuncEvalError::NumberArgs(2))
+    } else if args[0] == args[1] {
+        Ok(1.0)
+    } else {
+        Ok(0.0)
+    }
+}
+
+#[inline(never)]
+fn eval_lesser_than(args: &[f64]) -> Result<f64, FuncEvalError> {
+    if args.len() != 2 {
+        Err(FuncEvalError::NumberArgs(2))
+    } else if args[0] < args[1] {
+        Ok(1.0)
+    } else {
+        Ok(0.0)
+    }
+}
+
+#[inline(never)]
+fn eval_lesser_than_equals(args: &[f64]) -> Result<f64, FuncEvalError> {
+    if args.len() != 2 {
+        Err(FuncEvalError::NumberArgs(2))
+    } else if args[0] <= args[1] {
+        Ok(1.0)
+    } else {
+        Ok(0.0)
+    }
+}
+
 impl<T: CipherCodecContext> ContextProvider for CustomEvalContext<'_, T> {
     fn eval_func(&self, name: &str, args: &[f64]) -> Result<f64, FuncEvalError> {
         match name {
-            "pt" => {
-                if args.len() != 2 {
-                    return Err(FuncEvalError::NumberArgs(2));
-                }
-
-                let m = args[0] as usize;
-                if m > self.codec_ctx.get_plaintext_count() { panic!("Message index out of bounds") }
-                let u = args[1] as usize;
-                if u > self.codec_ctx.get_plaintext_len(m) { panic!("Unit index out of bounds") }
-                Ok(self.codec_ctx.decrypt(m, u) as f64)
-            },
-            "pt_freq_dist_error" => {
-                if args.len() != 1 {
-                    return Err(FuncEvalError::NumberArgs(1));
-                }
-
-                let l = args[0] as usize;
-                if l >= self.languages.len() { panic!("Language index out of bounds") }
-
-                Ok(self.languages[l].get_error(self.pt_freq_dist.get_or_init(|| {
-                    UnitFrequency::from_messages(&self.codec_ctx.get_all_plaintexts())
-                })))
-            },
-            "equals" => {
-                if args.len() != 2 {
-                    Err(FuncEvalError::NumberArgs(2))
-                } else if args[0] == args[1] {
-                    Ok(1.0)
-                } else {
-                    Ok(0.0)
-                }
-            },
-            "lesser_than" => {
-                if args.len() != 2 {
-                    Err(FuncEvalError::NumberArgs(2))
-                } else if args[0] < args[1] {
-                    Ok(1.0)
-                } else {
-                    Ok(0.0)
-                }
-            },
-            "lesser_than_equals" => {
-                if args.len() != 2 {
-                    Err(FuncEvalError::NumberArgs(2))
-                } else if args[0] <= args[1] {
-                    Ok(1.0)
-                } else {
-                    Ok(0.0)
-                }
-            },
+            "pt" => eval_pt(self.codec_ctx, args),
+            "pt_freq_dist_error" => eval_pt_freq_dist_error(self.codec_ctx, self.languages, &self.pt_freq_dist, args),
+            "equals" => eval_equals(args),
+            "lesser_than" => eval_lesser_than(args),
+            "lesser_than_equals" => eval_lesser_than_equals(args),
             &_ => Err(FuncEvalError::UnknownFunction),
         }
     }
@@ -169,11 +195,7 @@ impl<T: CipherCodecContext> ContextProvider for CustomEvalContext<'_, T> {
 
 fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWorkerContext, cond: &Expr, languages: &Vec<UnitFrequency>, tx: SyncSender<TaskPacket>) {
     worker_ctx.permute_keys_interruptible(messages, &mut |codec_ctx| {
-        if cond.eval_with_context(CustomEvalContext {
-            pt_freq_dist: OnceCell::<UnitFrequency>::new(),
-            codec_ctx,
-            languages,
-        }).unwrap() > 0.0 {
+        if cond.eval_with_context(CustomEvalContext::new(codec_ctx, languages)).unwrap() > 0.0 {
             tx.send(TaskPacket::Match { net_key: codec_ctx.get_current_key_net() }).unwrap();
         }
     }, &mut |_codec_ctx, keys| {
