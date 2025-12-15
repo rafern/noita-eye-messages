@@ -865,8 +865,8 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hot-eval"
-version = "0.0.1"
-source = "git+https://github.com/rafern/hot-eval-rs.git#41687195c4f3e5b924e5613e021b2030ce5611ed"
+version = "0.0.2"
+source = "git+https://github.com/rafern/hot-eval-rs.git#46ad1762337510a66dcc6f7845a3978e1e3ac230"
 dependencies = [
  "inkwell",
  "lalrpop",

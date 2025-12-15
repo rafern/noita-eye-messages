@@ -138,7 +138,7 @@ fn eval_pt_freq_dist_error<T: CipherWorkerContext>(codec_ctx: &T::DecryptionCont
 
 fn search_task<'str, T: CipherWorkerContext>(_worker_id: u32, messages: &MessageList, worker_ctx: T, cond_src: &'str String, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'str>> {
     let mut jit_ctx = JITContext::new();
-    let mut comp_ctx = jit_ctx.make_compilation_context();
+    let mut comp_ctx = jit_ctx.make_compilation_context()?;
     let mut pt_freq_dist = OnceCell::<UnitFrequency>::new();
     let mut cond_table = Table::new();
     let codec_ctx_hsi = cond_table.add_hidden_state(ValueType::USize);
