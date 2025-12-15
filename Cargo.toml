@@ -13,6 +13,9 @@ minifb = "0.28.0"
 prost = "0.14.1"
 rug = { version = "1.28.0", default-features = false, features = ["integer", "rational"] }
 
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
+
 [profile.release]
 # for some reason thin lto has better performance on my machine
 lto = "thin"

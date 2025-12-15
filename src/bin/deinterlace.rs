@@ -3,6 +3,10 @@ use std::path::PathBuf;
 use noita_eye_messages::data::{csv_export::export_csv_messages_or_exit, csv_import::import_csv_messages_or_exit, message::{Message, MessageList}};
 use clap::Parser;
 
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[derive(Parser)]
 struct Args {
     /// Stride to deinterlace with

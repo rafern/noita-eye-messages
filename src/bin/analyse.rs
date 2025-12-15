@@ -1,6 +1,10 @@
 use clap::Parser;
 use noita_eye_messages::{analysis::{freq::{UnitFrequency, UnitTotals}, plot::{bar_chart, freq_bar_chart}}, data::csv_import::{import_csv_languages_or_exit, import_csv_messages_or_exit}, utils::threading::AsyncTaskList};
 
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[derive(Parser)]
 struct Args {
     /// Path to CSV file containing message data

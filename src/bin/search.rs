@@ -23,6 +23,10 @@ use noita_eye_messages::data::message::MessageList;
 use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, format_seconds_left, print_message};
 use noita_eye_messages::data::csv_import::{import_csv_languages_or_exit, import_csv_messages_or_exit};
 
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[derive(clap::Parser)]
 struct Args {
     /// Path to CSV file containing message data
