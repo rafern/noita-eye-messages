@@ -126,12 +126,6 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
     }
 }
 
-struct CustomEvalContext<'a, T: CipherCodecContext> {
-    pub pt_freq_dist: OnceCell<UnitFrequency>,
-    pub codec_ctx: &'a T,
-    pub languages: &'a Vec<UnitFrequency>,
-}
-
 fn eval_pt<T: CipherWorkerContext>(codec_ctx: &T::DecryptionContext, m: usize, u: usize) -> u8 {
     codec_ctx.decrypt(m, u)
 }
@@ -142,7 +136,7 @@ fn eval_pt_freq_dist_error<T: CipherWorkerContext>(codec_ctx: &T::DecryptionCont
     }))
 }
 
-fn search_task<T: CipherWorkerContext>(_worker_id: u32, messages: &MessageList, worker_ctx: T, cond_src: &String, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error>> {
+fn search_task<'str, T: CipherWorkerContext>(_worker_id: u32, messages: &MessageList, worker_ctx: T, cond_src: &'str String, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'str>> {
     let mut jit_ctx = JITContext::new();
     let mut comp_ctx = jit_ctx.make_compilation_context();
     let mut pt_freq_dist = OnceCell::<UnitFrequency>::new();
@@ -176,7 +170,7 @@ fn search_task<T: CipherWorkerContext>(_worker_id: u32, messages: &MessageList, 
             // l: usize
             BindingFunctionParameter::Parameter { value_type: ValueType::USize },
         ],
-        fn_ptr: eval_pt::<T> as *const (),
+        fn_ptr: eval_pt_freq_dist_error::<T> as *const (),
     })?;
 
     let cond = comp_ctx.compile_str(&cond_src, &cond_table)?;

@@ -1,5 +1,5 @@
 [alias]
-try = "run --release --bin search -- data/ciphertext/all-original.csv equals(pt(0,0),pt(1,0)) arx 2 -s"
-try-debug = "run --bin search -- data/ciphertext/all-original.csv equals(pt(0,0),pt(1,0)) arx 2 -s"
-try-parallel = "run --release --bin search -- data/ciphertext/all-original.csv equals(pt(0,0),pt(1,0)) arx 2"
-try-parallel-debug = "run --bin search -- data/ciphertext/all-original.csv equals(pt(0,0),pt(1,0)) arx 2"
+try = "run --release --bin search -- data/ciphertext/all-original.csv pt(0,0)==pt(1,0) arx 2 -s"
+try-debug = "run --bin search -- data/ciphertext/all-original.csv pt(0,0)==pt(1,0) arx 2 -s"
+try-parallel = "run --release --bin search -- data/ciphertext/all-original.csv pt(0,0)==pt(1,0) arx 2"
+try-parallel-debug = "run --bin search -- data/ciphertext/all-original.csv pt(0,0)==pt(1,0) arx 2"
