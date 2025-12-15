@@ -8,7 +8,7 @@ clap = { version = "4.5.53", features = ["derive"] }
 colored = "3.0.0"
 dataviz = "0.1.9"
 fontconfig = "0.10.0"
-meval = "0.2.0"
+hot-eval = { git = "https://github.com/rafern/hot-eval-rs.git", version = "0.0.1" }
 minifb = "0.28.0"
 prost = "0.14.1"
 rug = { version = "1.28.0", default-features = false, features = ["integer", "rational"] }

@@ -1,4 +1,8 @@
-use meval::{ContextProvider, Expr, FuncEvalError};
+use hot_eval::codegen::compiled_expression::CompiledExpression;
+use hot_eval::codegen::jit_context::JITContext;
+use hot_eval::common::binding::{Binding, BindingFunctionParameter};
+use hot_eval::common::table::Table;
+use hot_eval::common::value_type::ValueType;
 use prost::Message;
 use clap::Parser;
 use noita_eye_messages::analysis::freq::UnitFrequency;
@@ -7,10 +11,11 @@ use noita_eye_messages::ciphers::deserialise_cipher;
 use noita_eye_messages::data::key_dump::KeyDumpMeta;
 use rug::{Integer, Rational};
 use std::cell::OnceCell;
+use std::error::Error;
+use std::fmt;
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroU32;
-use std::str::FromStr;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 use noita_eye_messages::utils::threading::get_parallelism;
@@ -56,7 +61,25 @@ enum TaskPacket {
         //     yet, but will
         net_key: Vec<u8>,
     },
+    Error {
+        message: String,
+    }
 }
+
+#[derive(Debug)]
+pub enum PredicateError {
+    BadExpressionType,
+}
+
+impl fmt::Display for PredicateError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            Self::BadExpressionType => "Bad expression type; expected a predicate (boolean)",
+        })
+    }
+}
+
+impl Error for PredicateError {}
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -109,71 +132,72 @@ struct CustomEvalContext<'a, T: CipherCodecContext> {
     pub languages: &'a Vec<UnitFrequency>,
 }
 
-impl<T: CipherCodecContext> ContextProvider for CustomEvalContext<'_, T> {
-    fn eval_func(&self, name: &str, args: &[f64]) -> Result<f64, FuncEvalError> {
-        match name {
-            "pt" => {
-                if args.len() != 2 {
-                    return Err(FuncEvalError::NumberArgs(2));
-                }
-
-                let m = args[0] as usize;
-                if m > self.codec_ctx.get_plaintext_count() { panic!("Message index out of bounds") }
-                let u = args[1] as usize;
-                if u > self.codec_ctx.get_plaintext_len(m) { panic!("Unit index out of bounds") }
-                Ok(self.codec_ctx.decrypt(m, u) as f64)
-            },
-            "pt_freq_dist_error" => {
-                if args.len() != 1 {
-                    return Err(FuncEvalError::NumberArgs(1));
-                }
-
-                let l = args[0] as usize;
-                if l >= self.languages.len() { panic!("Language index out of bounds") }
-
-                Ok(self.languages[l].get_error(self.pt_freq_dist.get_or_init(|| {
-                    UnitFrequency::from_messages(&self.codec_ctx.get_all_plaintexts())
-                })))
-            },
-            "equals" => {
-                if args.len() != 2 {
-                    Err(FuncEvalError::NumberArgs(2))
-                } else if args[0] == args[1] {
-                    Ok(1.0)
-                } else {
-                    Ok(0.0)
-                }
-            },
-            "lesser_than" => {
-                if args.len() != 2 {
-                    Err(FuncEvalError::NumberArgs(2))
-                } else if args[0] < args[1] {
-                    Ok(1.0)
-                } else {
-                    Ok(0.0)
-                }
-            },
-            "lesser_than_equals" => {
-                if args.len() != 2 {
-                    Err(FuncEvalError::NumberArgs(2))
-                } else if args[0] <= args[1] {
-                    Ok(1.0)
-                } else {
-                    Ok(0.0)
-                }
-            },
-            &_ => Err(FuncEvalError::UnknownFunction),
-        }
-    }
+fn eval_pt<T: CipherWorkerContext>(codec_ctx: &T::DecryptionContext, m: usize, u: usize) -> u8 {
+    codec_ctx.decrypt(m, u)
 }
 
-fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWorkerContext, cond: &Expr, languages: &Vec<UnitFrequency>, tx: SyncSender<TaskPacket>) {
+fn eval_pt_freq_dist_error<T: CipherWorkerContext>(codec_ctx: &T::DecryptionContext, pt_freq_dist: &OnceCell<UnitFrequency>, languages: &Vec<UnitFrequency>, l: usize) -> f64 {
+    languages[l].get_error(pt_freq_dist.get_or_init(|| {
+        UnitFrequency::from_messages(&codec_ctx.get_all_plaintexts())
+    }))
+}
+
+fn search_task<T: CipherWorkerContext>(_worker_id: u32, messages: &MessageList, worker_ctx: T, cond_src: &String, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error>> {
+    let mut jit_ctx = JITContext::new();
+    let mut comp_ctx = jit_ctx.make_compilation_context();
+    let mut pt_freq_dist = OnceCell::<UnitFrequency>::new();
+    let mut cond_table = Table::new();
+    let codec_ctx_hsi = cond_table.add_hidden_state(ValueType::USize);
+    let pt_freq_dist_hsi = cond_table.add_hidden_state(ValueType::USize);
+    let languages_hsi = cond_table.add_hidden_state(ValueType::USize);
+
+    cond_table.add_binding("pt".into(), Binding::Function {
+        ret_type: ValueType::U8,
+        params: vec![
+            // codec_ctx: &T::DecryptionContext
+            BindingFunctionParameter::HiddenStateArgument { hidden_state_idx: codec_ctx_hsi, cast_to_type: None },
+            // m: usize
+            BindingFunctionParameter::Parameter { value_type: ValueType::USize },
+            // u: usize
+            BindingFunctionParameter::Parameter { value_type: ValueType::USize },
+        ],
+        fn_ptr: eval_pt::<T> as *const (),
+    })?;
+
+    cond_table.add_binding("pt_freq_dist_error".into(), Binding::Function {
+        ret_type: ValueType::U8,
+        params: vec![
+            // codec_ctx: &T::DecryptionContext
+            BindingFunctionParameter::HiddenStateArgument { hidden_state_idx: codec_ctx_hsi, cast_to_type: None },
+            // pt_freq_dist: &OnceCell<UnitFrequency>
+            BindingFunctionParameter::HiddenStateArgument { hidden_state_idx: pt_freq_dist_hsi, cast_to_type: None },
+            // languages: &Vec<UnitFrequency>
+            BindingFunctionParameter::HiddenStateArgument { hidden_state_idx: languages_hsi, cast_to_type: None },
+            // l: usize
+            BindingFunctionParameter::Parameter { value_type: ValueType::USize },
+        ],
+        fn_ptr: eval_pt::<T> as *const (),
+    })?;
+
+    let cond = comp_ctx.compile_str(&cond_src, &cond_table)?;
+
+    let (mut slab, jit_fn) = match cond {
+        CompiledExpression::Bool { mut slab, jit_fn } => {
+            slab.set_ptr_value(pt_freq_dist_hsi, &pt_freq_dist);
+            slab.set_ptr_value(languages_hsi, &languages);
+            (slab, jit_fn)
+        },
+        _ => {
+            return Err(PredicateError::BadExpressionType.into());
+        },
+    };
+
     worker_ctx.permute_keys_interruptible(messages, &mut |codec_ctx| {
-        if cond.eval_with_context(CustomEvalContext {
-            pt_freq_dist: OnceCell::<UnitFrequency>::new(),
-            codec_ctx,
-            languages,
-        }).unwrap() > 0.0 {
+        pt_freq_dist.take(); // clear cache
+
+        slab.set_ptr_value(codec_ctx_hsi, codec_ctx);
+
+        if unsafe { jit_fn.call() } {
             tx.send(TaskPacket::Match { net_key: codec_ctx.get_current_key_net() }).unwrap();
         }
     }, &mut |_codec_ctx, keys| {
@@ -181,13 +205,11 @@ fn search_task(worker_id: u32, messages: &MessageList, worker_ctx: impl CipherWo
         true
     });
 
-    tx.send(TaskPacket::Finished { worker_id }).unwrap();
+    Ok(())
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-
-    let cond = Expr::from_str(&args.condition)?;
 
     let languages = import_csv_languages_or_exit(&args.language);
 
@@ -243,12 +265,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for worker_ctx in worker_ctxs {
             let worker_id_clone = worker_id.clone();
             let messages = &messages;
-            let cond = &cond;
+            let cond_src = &args.condition;
             let languages = &languages;
             let tx = tx.clone();
 
             scope.spawn(move || {
-                search_task(worker_id_clone, messages, worker_ctx, cond, languages, tx);
+                match search_task(worker_id_clone, messages, worker_ctx, cond_src, languages, &tx) {
+                    Ok(_) => tx.send(TaskPacket::Finished { worker_id }).unwrap(),
+                    Err(err) => tx.send(TaskPacket::Error { message: err.to_string() }).unwrap(),
+                }
             });
 
             worker_id += 1;
@@ -282,7 +307,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     println!("Matched key {}", cipher.net_key_to_string(net_key));
                                 },
                             }
-                        }
+                        },
+                        TaskPacket::Error { message } => {
+                            workers_waiting -= 1;
+                            println!("Worker {worker_id} errored: {message}");
+                            // TODO kill other workers?
+                        },
                     }
                 },
                 Err(err) => {
