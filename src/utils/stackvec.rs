@@ -25,7 +25,7 @@ impl<T, const MAX_LEN: usize> StackVec<T, MAX_LEN> {
 
     pub fn push(&mut self, val: T) {
         debug_assert!(self.len < MAX_LEN);
-        self.data[self.len] = val;
+        *unsafe { self.data.get_unchecked_mut(self.len) } = val;
         self.len += 1;
     }
 }
@@ -34,14 +34,14 @@ impl<T, const MAX_LEN: usize> Index<usize> for StackVec<T, MAX_LEN> {
     type Output = T;
     fn index(&self, idx: usize) -> &<Self as Index<usize>>::Output {
         debug_assert!(idx < self.len);
-        &self.data[idx]
+        unsafe { self.data.get_unchecked(idx) }
     }
 }
 
 impl<T, const MAX_LEN: usize> IndexMut<usize> for StackVec<T, MAX_LEN> {
     fn index_mut(&mut self, idx: usize) -> &mut <Self as Index<usize>>::Output {
         debug_assert!(idx < self.len);
-        &mut self.data[idx]
+        unsafe { self.data.get_unchecked_mut(idx) }
     }
 }
 
