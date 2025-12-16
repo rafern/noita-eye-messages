@@ -159,6 +159,9 @@ fn search_task<'str, T: CipherWorkerContext>(_worker_id: u32, messages: &Message
             // u: usize
             BindingFunctionParameter::Parameter { value_type: ValueType::USize },
         ],
+        // TODO don't be tempted to replace `eval_pt::<T>` with
+        //      `T::DecryptionContext::decrypt`. for some reason it's slightly
+        //      slower. investigate why?
         fn_ptr: eval_pt::<T> as *const (),
     })?;
 
@@ -191,6 +194,11 @@ fn search_task<'str, T: CipherWorkerContext>(_worker_id: u32, messages: &Message
     };
 
     worker_ctx.permute_keys_interruptible(messages, &mut |codec_ctx| {
+        // TODO clearing the cache results in a 5% slowdown. hot-eval should
+        //      support pure functions, so that it reuses outputs when possible,
+        //      otherwise we have to unnecessarily clear a cache and manage our
+        //      own lazy cell, even when there's only a single call in the
+        //      expression
         pt_freq_dist.take(); // clear cache
 
         slab.set_ptr_value(codec_ctx_hsi, codec_ctx);
