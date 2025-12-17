@@ -1,6 +1,6 @@
 use hot_eval::codegen::compiled_expression::CompiledExpression;
 use hot_eval::codegen::jit_context::JITContext;
-use hot_eval::common::binding::{Binding, BindingFunctionParameter};
+use hot_eval::common::binding::BindingFunctionParameter;
 use hot_eval::common::table::Table;
 use hot_eval::common::value_type::ValueType;
 use prost::Message;
@@ -130,13 +130,13 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
     }
 }
 
-fn eval_pt<T: CipherWorkerContext>(codec_ctx: &T::DecryptionContext, m: usize, u: usize) -> u8 {
-    codec_ctx.decrypt(m, u)
+fn eval_pt<T: CipherWorkerContext>(codec_ctx: *const T::DecryptionContext, m: usize, u: usize) -> u8 {
+    unsafe { &*codec_ctx }.decrypt(m, u)
 }
 
-fn eval_pt_freq_dist_error<T: CipherWorkerContext>(codec_ctx: &T::DecryptionContext, pt_freq_dist: &OnceCell<UnitFrequency>, languages: &Vec<UnitFrequency>, l: usize) -> f64 {
-    languages[l].get_error(pt_freq_dist.get_or_init(|| {
-        UnitFrequency::from_messages(&codec_ctx.get_all_plaintexts())
+fn eval_pt_freq_dist_error<T: CipherWorkerContext>(codec_ctx: *const T::DecryptionContext, pt_freq_dist: *const OnceCell<UnitFrequency>, languages: *const Vec<UnitFrequency>, l: usize) -> f64 {
+    (unsafe { &*languages })[l].get_error(unsafe { &*pt_freq_dist }.get_or_init(|| {
+        UnitFrequency::from_messages(&unsafe { &*codec_ctx }.get_all_plaintexts())
     }))
 }
 
@@ -149,36 +149,25 @@ fn search_task<'str, T: CipherWorkerContext>(_worker_id: u32, messages: &Message
     let pt_freq_dist_hsi = cond_table.add_hidden_state(ValueType::USize);
     let languages_hsi = cond_table.add_hidden_state(ValueType::USize);
 
-    cond_table.add_binding("pt".into(), Binding::Function {
-        ret_type: ValueType::U8,
-        params: vec![
-            // codec_ctx: &T::DecryptionContext
-            BindingFunctionParameter::HiddenStateArgument { hidden_state_idx: codec_ctx_hsi, cast_to_type: None },
-            // m: usize
-            BindingFunctionParameter::Parameter { value_type: ValueType::USize },
-            // u: usize
-            BindingFunctionParameter::Parameter { value_type: ValueType::USize },
-        ],
-        // TODO don't be tempted to replace `eval_pt::<T>` with
-        //      `T::DecryptionContext::decrypt`. for some reason it's slightly
-        //      slower. investigate why?
-        fn_ptr: eval_pt::<T> as *const (),
-    })?;
+    cond_table.add_function_3_map("pt".into(), eval_pt::<T>,
+        // codec_ctx: &T::DecryptionContext
+        BindingFunctionParameter::from_hidden_state(codec_ctx_hsi),
+        // m: usize
+        ValueType::USize,
+        // u: usize
+        ValueType::USize,
+    )?;
 
-    cond_table.add_binding("pt_freq_dist_error".into(), Binding::Function {
-        ret_type: ValueType::U8,
-        params: vec![
-            // codec_ctx: &T::DecryptionContext
-            BindingFunctionParameter::HiddenStateArgument { hidden_state_idx: codec_ctx_hsi, cast_to_type: None },
-            // pt_freq_dist: &OnceCell<UnitFrequency>
-            BindingFunctionParameter::HiddenStateArgument { hidden_state_idx: pt_freq_dist_hsi, cast_to_type: None },
-            // languages: &Vec<UnitFrequency>
-            BindingFunctionParameter::HiddenStateArgument { hidden_state_idx: languages_hsi, cast_to_type: None },
-            // l: usize
-            BindingFunctionParameter::Parameter { value_type: ValueType::USize },
-        ],
-        fn_ptr: eval_pt_freq_dist_error::<T> as *const (),
-    })?;
+    cond_table.add_function_4_map("pt_freq_dist_error".into(), eval_pt_freq_dist_error::<T>,
+        // codec_ctx: &T::DecryptionContext
+        BindingFunctionParameter::from_hidden_state(codec_ctx_hsi),
+        // pt_freq_dist: &OnceCell<UnitFrequency>
+        BindingFunctionParameter::from_hidden_state(pt_freq_dist_hsi),
+        // languages: &Vec<UnitFrequency>
+        BindingFunctionParameter::from_hidden_state(languages_hsi),
+        // l: usize
+        ValueType::USize
+    )?;
 
     let cond = comp_ctx.compile_str(&cond_src, &cond_table)?;
 
