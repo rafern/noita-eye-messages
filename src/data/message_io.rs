@@ -4,7 +4,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{analysis::alphabet::Alphabet, utils::run::{AnyErrorResult, UnitResult}};
 
-use super::{format_error::{InvalidFormatError, InvalidFormatErrorKind}, message::{Message, MessageList}};
+use super::{format_error::{InvalidFormatError, InvalidFormatErrorKind}, message::{Message, MessageList, MessageRenderMap, RenderMessage, RenderMessageBuilder}};
 
 pub fn export_csv_messages(path: &std::path::PathBuf, messages: &MessageList) -> UnitResult {
     let mut file = std::fs::File::create(path)?;
@@ -26,16 +26,18 @@ pub fn export_csv_messages(path: &std::path::PathBuf, messages: &MessageList) ->
     Ok(())
 }
 
-pub fn import_csv_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> AnyErrorResult<MessageList> {
+pub fn import_csv_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> AnyErrorResult<MessageRenderMap> {
     let csv = std::fs::read_to_string(path)?;
 
     let mut messages = MessageList::default();
+    let mut render_messages = Vec::<RenderMessage>::new();
     let mut r = 0;
     for row in csv.split('\n') {
         let row_trim = row.trim();
         if row_trim.len() > 0 {
             let mut c = 0;
             let mut message = Message::default();
+            let mut render_msg_builder = RenderMessageBuilder::new();
             let mut first = true;
 
             for col in row.split(',') {
@@ -50,8 +52,14 @@ pub fn import_csv_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> An
                     first = false;
                 } else {
                     let unit = col.parse::<u8>().or(Err(InvalidFormatError { kind: InvalidFormatErrorKind::InvalidDatum, row: r, col: c }))?;
-                    if alphabet.get_unit(unit).is_some() && message.data.try_push(unit).is_none() {
-                        return Err(InvalidFormatError { kind: InvalidFormatErrorKind::MessageLengthLimitExceeded, row: r, col: c }.into());
+                    if alphabet.get_unit(unit).is_some() {
+                        if let Some(unit_idx) = message.data.try_push(unit) {
+                            render_msg_builder.push_unit(unit_idx);
+                        } else {
+                            return Err(InvalidFormatError { kind: InvalidFormatErrorKind::MessageLengthLimitExceeded, row: r, col: c }.into());
+                        }
+                    } else {
+                        render_msg_builder.push_hex(unit);
                     }
                 }
 
@@ -65,6 +73,8 @@ pub fn import_csv_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> An
             if messages.try_push(message).is_none() {
                 return Err(InvalidFormatError { kind: InvalidFormatErrorKind::MessageLimitExceeded, row: r, col: c }.into());
             }
+
+            render_messages.push(render_msg_builder.done());
         }
 
         r += 1;
@@ -74,24 +84,30 @@ pub fn import_csv_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> An
         return Err(InvalidFormatError { kind: InvalidFormatErrorKind::NoMessages, row: r, col: 0 }.into());
     }
 
-    Ok(messages)
+    Ok(MessageRenderMap::new(messages, render_messages))
 }
 
-pub fn import_txt_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> AnyErrorResult<MessageList> {
+pub fn import_txt_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> AnyErrorResult<MessageRenderMap> {
     let txt = std::fs::read_to_string(path)?;
 
     let mut messages = MessageList::default();
+    let mut render_messages = Vec::<RenderMessage>::new();
     let mut r = 0;
     for row in txt.split('\n') {
         let mut message = Message::from_name(format!("message-{}", messages.len()).into());
+        let mut render_msg_builder = RenderMessageBuilder::new();
         let mut c = 0;
 
         for grapheme in row.graphemes(true) {
             let unit = alphabet.get_unit_idx(&grapheme.into());
             if let Some(unit) = unit {
-                if message.data.try_push(unit).is_none() {
+                if let Some(unit_idx) = message.data.try_push(unit) {
+                    render_msg_builder.push_unit(unit_idx);
+                } else {
                     return Err(InvalidFormatError { kind: InvalidFormatErrorKind::MessageLengthLimitExceeded, row: r, col: c }.into());
                 }
+            } else {
+                render_msg_builder.push_plaintext(String::from(grapheme));
             }
 
             c += 1;
@@ -105,6 +121,7 @@ pub fn import_txt_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> An
             return Err(InvalidFormatError { kind: InvalidFormatErrorKind::MessageLimitExceeded, row: r, col: 0 }.into());
         }
 
+        render_messages.push(render_msg_builder.done());
         r += 1;
     }
 
@@ -112,10 +129,10 @@ pub fn import_txt_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> An
         return Err(InvalidFormatError { kind: InvalidFormatErrorKind::NoMessages, row: r, col: 0 }.into());
     }
 
-    Ok(messages)
+    Ok(MessageRenderMap::new(messages, render_messages))
 }
 
-pub fn import_messages(data_path: &std::path::PathBuf, alphabet: &Alphabet) -> AnyErrorResult<MessageList> {
+pub fn import_messages(data_path: &std::path::PathBuf, alphabet: &Alphabet) -> AnyErrorResult<MessageRenderMap> {
     let ext = data_path.extension();
     if let Some(ext) = ext && ext.to_ascii_lowercase() == "txt" {
         import_txt_messages(data_path, alphabet)

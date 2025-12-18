@@ -25,8 +25,8 @@ use std::num::NonZeroU32;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 use noita_eye_messages::utils::threading::get_parallelism;
-use noita_eye_messages::data::message::MessageList;
-use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, format_seconds_left, print_messages};
+use noita_eye_messages::data::message::{MessageList, MessageRenderMap};
+use noita_eye_messages::utils::print::{MessagesPrintConfig, format_big_float, format_big_uint, format_seconds_left, print_messages};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -100,9 +100,9 @@ const RECV_TIMEOUT: Duration = Duration::from_secs(1);
 // TODO bin to decrypt with individual key
 // TODO bin to refine a search via key dump files
 
-fn preamble(messages: &MessageList, alphabet: &Alphabet, worker_total: u32, keys_total: &Integer) {
+fn preamble(messages_render_map: &MessageRenderMap, alphabet: &Alphabet, worker_total: u32, keys_total: &Integer) {
     println!("Searching {} keys with {} workers", format_big_uint(keys_total), worker_total);
-    print_messages(String::from("Ciphertexts"), messages, alphabet, &MessagePrintConfig::default());
+    print_messages(String::from("Ciphertexts"), messages_render_map, alphabet, &MessagesPrintConfig::default());
     println!();
 }
 
@@ -205,7 +205,7 @@ fn main() { main_error_wrap!({
 
     let languages = import_csv_languages(&args.language)?;
     let alphabet = import_csv_alphabet_or_default(&args.alphabet)?;
-    let messages = import_messages(&args.data_path, &alphabet)?;
+    let messages_render_map = import_messages(&args.data_path, &alphabet)?;
     let cipher = deserialise_cipher(&args.cipher, &args.config)?;
 
     let mut key_dump_file: Option<File> = match &args.key_dump_path {
@@ -232,6 +232,7 @@ fn main() { main_error_wrap!({
     };
 
     let (tx, rx) = sync_channel::<TaskPacket>(64);
+    let messages = messages_render_map.get_messages();
 
     std::thread::scope(|scope| -> UnitResult {
         let mut keys_total = Integer::new();
@@ -243,7 +244,7 @@ fn main() { main_error_wrap!({
             worker_ctxs.push(worker_ctx);
         }
 
-        preamble(&messages, &alphabet, worker_total, &keys_total);
+        preamble(&messages_render_map, &alphabet, worker_total, &keys_total);
 
         let start_time = Instant::now();
 

@@ -23,16 +23,17 @@ impl<T, const MAX_LEN: usize> StackVec<T, MAX_LEN> {
         }
     }
 
-    pub fn push(&mut self, val: T) {
+    pub fn push(&mut self, val: T) -> usize {
         debug_assert!(self.len < MAX_LEN);
         *unsafe { self.data.get_unchecked_mut(self.len) } = val;
+        let idx = self.len;
         self.len += 1;
+        idx
     }
 
-    pub fn try_push(&mut self, val: T) -> Option<()> {
+    pub fn try_push(&mut self, val: T) -> Option<usize> {
         if self.len < MAX_LEN {
-            self.push(val);
-            Some(())
+            Some(self.push(val))
         } else {
             None
         }

@@ -1,5 +1,5 @@
 use clap::Parser;
-use noita_eye_messages::{analysis::{plot::{bar_chart, freq_bar_chart}, unit_freq::UnitFrequency, unit_totals::UnitTotals}, data::{alphabet_io::import_csv_alphabet_or_default, language_io::import_csv_languages, message_io::import_messages}, main_error_wrap, utils::threading::AsyncTaskList};
+use noita_eye_messages::{analysis::{plot::{bar_chart, freq_bar_chart}, unit_freq::UnitFrequency, unit_totals::UnitTotals}, data::{alphabet_io::import_csv_alphabet_or_default, language_io::import_csv_languages, message_io::import_messages}, main_error_wrap, utils::{print::{MessagesPrintConfig, print_messages}, threading::AsyncTaskList}};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -22,9 +22,12 @@ fn main() { main_error_wrap!({
 
     let mut freqs = import_csv_languages(&args.language)?;
     let alphabet = import_csv_alphabet_or_default(&args.alphabet)?;
-    let messages = import_messages(&args.data_path, &alphabet)?;
+    let messages_render_map = import_messages(&args.data_path, &alphabet)?;
 
-    let unit_totals = UnitTotals::from_messages(&messages);
+    print_messages(String::from("Input"), &messages_render_map, &alphabet, &MessagesPrintConfig::default());
+    println!();
+
+    let unit_totals = UnitTotals::from_messages(messages_render_map.get_messages());
     let freq = UnitFrequency::from_unit_totals_with_name("Ciphertext", &unit_totals);
 
     for other in &freqs {

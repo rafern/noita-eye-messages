@@ -23,7 +23,7 @@ struct Args {
 fn main() { main_error_wrap!({
     let args = Args::parse();
     let alphabet = import_csv_alphabet_or_default(&args.alphabet)?;
-    let messages = import_messages(&args.in_data_path, &alphabet)?;
+    let messages_render_map = import_messages(&args.in_data_path, &alphabet)?;
 
     let out_data_path_osstr = std::path::absolute(args.out_data_path)?;
     let out_data_path = out_data_path_osstr.as_path();
@@ -47,7 +47,7 @@ fn main() { main_error_wrap!({
     for offset in 0..args.stride {
         let mut messages_out = MessageList::default();
 
-        for message in messages.iter() {
+        for message in messages_render_map.get_messages().iter() {
             let mut message_out = Message::default();
             message_out.name = message.name.clone();
 
