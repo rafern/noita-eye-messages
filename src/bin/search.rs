@@ -3,9 +3,15 @@ use hot_eval::codegen::jit_context::JITContext;
 use hot_eval::common::binding::BindingFunctionParameter;
 use hot_eval::common::table::Table;
 use hot_eval::common::value_type::ValueType;
+use noita_eye_messages::analysis::alphabet::Alphabet;
+use noita_eye_messages::data::alphabet_io::import_csv_alphabet_or_default;
+use noita_eye_messages::data::language_io::import_csv_languages;
+use noita_eye_messages::data::message_io::import_messages;
+use noita_eye_messages::main_error_wrap;
+use noita_eye_messages::utils::run::UnitResult;
 use prost::Message;
 use clap::Parser;
-use noita_eye_messages::analysis::freq::UnitFrequency;
+use noita_eye_messages::analysis::unit_freq::UnitFrequency;
 use noita_eye_messages::ciphers::base::{Cipher, CipherWorkerContext, CipherCodecContext};
 use noita_eye_messages::ciphers::deserialise_cipher;
 use noita_eye_messages::data::key_dump::KeyDumpMeta;
@@ -20,8 +26,7 @@ use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 use noita_eye_messages::utils::threading::get_parallelism;
 use noita_eye_messages::data::message::MessageList;
-use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, format_seconds_left, print_message};
-use noita_eye_messages::data::csv_import::{import_csv_languages_or_exit, import_csv_messages_or_exit};
+use noita_eye_messages::utils::print::{MessagePrintConfig, format_big_float, format_big_uint, format_seconds_left, print_messages};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -29,7 +34,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[derive(clap::Parser)]
 struct Args {
-    /// Path to CSV file containing message data
+    /// Path to CSV or TXT file containing message data
     data_path: std::path::PathBuf,
     /// Condition to match. Values greater than 0 are treated as true, which should make it easy to use heuristics with thresholds as conditions (simply subtract the threshold value from the heuristic)
     condition: String,
@@ -43,12 +48,15 @@ struct Args {
     /// Maximum number of workers (including main thread). Using all available cores has diminishing returns, so tweaking this value is recommended
     #[arg(short, long)]
     max_parallelism: Option<NonZeroU32>,
-    /// Path to CSV file containing a language's letter frequency distribution. Used to register languages. Refer to a language by its index (0-based) in the order specified in the terminal
+    /// Path to CSV file containing an alphabet with letter frequency distribution. Used to register languages for doing analysis. Refer to a language by its index (0-based) in the order specified in the terminal
     #[clap(short, long)]
     language: Vec<std::path::PathBuf>,
     /// Path to key dump file, if you want to store matches in a file instead of logging to the console
     #[arg(short, long)]
     key_dump_path: Option<std::path::PathBuf>,
+    /// Path to alphabet file for interpreting the units in the message data. Any character not present in the alphabet will not be included in the message. If not passed, then an ASCII alphabet which includes all units will be used by default
+    #[arg(short, long)]
+    alphabet: Option<std::path::PathBuf>,
 }
 
 enum TaskPacket {
@@ -92,20 +100,9 @@ const RECV_TIMEOUT: Duration = Duration::from_secs(1);
 // TODO bin to decrypt with individual key
 // TODO bin to refine a search via key dump files
 
-fn preamble(messages: &MessageList, worker_total: u32, keys_total: &Integer) {
-    let mut working_messages: MessageList = messages.clone();
-
-    println!("Searching {} keys with {} workers. Ciphertexts (mod_add 32):", format_big_uint(keys_total), worker_total);
-
-    for m in 0..working_messages.len() {
-        let msg = &mut working_messages[m];
-        for i in 0..msg.data.len() {
-            msg.data[i] = msg.data[i] + 32;
-        }
-
-        print_message(msg, MessagePrintConfig::default());
-    }
-
+fn preamble(messages: &MessageList, alphabet: &Alphabet, worker_total: u32, keys_total: &Integer) {
+    println!("Searching {} keys with {} workers", format_big_uint(keys_total), worker_total);
+    print_messages(String::from("Ciphertexts"), messages, alphabet, &MessagePrintConfig::default());
     println!();
 }
 
@@ -203,18 +200,12 @@ fn search_task<'str, T: CipherWorkerContext>(_worker_id: u32, messages: &Message
     Ok(())
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn main() { main_error_wrap!({
     let args = Args::parse();
 
-    let languages = import_csv_languages_or_exit(&args.language);
-
-    let messages = import_csv_messages_or_exit(&args.data_path);
-    if messages.len() == 0 {
-        // TODO return error result instead
-        eprintln!("Nothing to do; need at least one message");
-        std::process::exit(1);
-    }
-
+    let languages = import_csv_languages(&args.language)?;
+    let alphabet = import_csv_alphabet_or_default(&args.alphabet)?;
+    let messages = import_messages(&args.data_path, &alphabet)?;
     let cipher = deserialise_cipher(&args.cipher, &args.config)?;
 
     let mut key_dump_file: Option<File> = match &args.key_dump_path {
@@ -242,7 +233,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let (tx, rx) = sync_channel::<TaskPacket>(64);
 
-    std::thread::scope(|scope| {
+    std::thread::scope(|scope| -> UnitResult {
         let mut keys_total = Integer::new();
         let mut worker_ctxs = Vec::new();
 
@@ -252,7 +243,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             worker_ctxs.push(worker_ctx);
         }
 
-        preamble(&messages, worker_total, &keys_total);
+        preamble(&messages, &alphabet, worker_total, &keys_total);
 
         let start_time = Instant::now();
 
@@ -350,12 +341,5 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         Ok(())
-    })
-}
-
-fn main() {
-    if let Err(e) = run() {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
-    }
-}
+    })?;
+}) }

@@ -1,28 +1,6 @@
 use crate::data::message::MessageList;
 
-const UNITS: usize = 256; // assuming ASCII, although it's probably mod 83
-
-/**
- * The total occurrences of all units in a collection of messages. Each key
- * represents a unit, and each value represents the total occurrences of that
- * unit.
- */
-pub struct UnitTotals {
-    pub data: [usize; UNITS],
-}
-
-impl UnitTotals {
-    pub fn from_messages(messages: &MessageList) -> UnitTotals {
-        let mut counter = UnitTotals { data: [0; UNITS] };
-        for message in messages.iter() {
-            for c in message.data.iter() {
-                counter.data[*c as usize] += 1;
-            }
-        }
-
-        counter
-    }
-}
+use super::{alphabet::{Alphabet, MAX_UNITS}, unit_totals::UnitTotals};
 
 /**
  * Sorted frequency data for all units in a collection of messages. Information
@@ -32,27 +10,51 @@ impl UnitTotals {
 #[derive(Clone)]
 pub struct UnitFrequency {
     pub name: String,
-    pub data: [f64; UNITS],
+    pub data: [f64; MAX_UNITS],
 }
 
 impl Default for UnitFrequency {
     fn default() -> Self {
         UnitFrequency {
             name: String::new(),
-            data: [0.0; UNITS],
+            data: [0.0; MAX_UNITS],
         }
     }
 }
 
 impl UnitFrequency {
+    pub fn from_alphabet(alphabet: &Alphabet) -> UnitFrequency {
+        let mut freq = UnitFrequency::default();
+
+        let mut weight_total = 0f64;
+        let mut u: usize = 0;
+        for (_, alpha_unit) in alphabet.iter_units() {
+            let weight = alpha_unit.weight;
+            weight_total += weight;
+            freq.data[u] = weight;
+            u += 1;
+        }
+
+        // normalize weights, to make sure they're actually frequencies
+        if weight_total != 1.0 && weight_total != 0.0 {
+            for i in 0..u {
+                freq.data[i] /= weight_total;
+            }
+        }
+
+        freq.name = alphabet.get_name().clone();
+        freq.sort();
+        freq
+    }
+
     pub fn from_unit_totals(totals: &UnitTotals) -> UnitFrequency {
         let mut total: usize = 0;
         for i in totals.data {
             total += i;
         }
 
-        let mut freq = UnitFrequency { name: String::new(), data: [0f64; UNITS] };
-        for i in 0..UNITS {
+        let mut freq = UnitFrequency { name: String::new(), data: [0f64; MAX_UNITS] };
+        for i in 0..MAX_UNITS {
             freq.data[i] = totals.data[i] as f64 / total as f64;
         }
 
@@ -73,7 +75,7 @@ impl UnitFrequency {
     pub fn get_error(&self, other: &UnitFrequency) -> f64 {
         let mut error: f64 = 0.0;
 
-        for i in 0..UNITS {
+        for i in 0..MAX_UNITS {
             error += (self.data[i] - other.data[i]).abs();
         }
 

@@ -6,7 +6,7 @@ use minifb::{Key, MouseMode, Window, WindowOptions};
 
 use crate::utils::threading::AsyncTaskList;
 
-use super::freq::{UnitFrequency, UnitTotals};
+use super::{unit_freq::UnitFrequency, unit_totals::UnitTotals};
 
 const BLACK: [u8; 3] = [0, 0, 0];
 const WHITE: [u8; 3] = [255, 255, 255];

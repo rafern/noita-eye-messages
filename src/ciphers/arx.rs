@@ -1,7 +1,7 @@
 use prost::Message;
 use rug::{Integer, ops::Pow};
 
-use crate::{ciphers::base::{Cipher, CipherWorkerContext, CipherCodecContext, StandardCipherError}, data::message::MessageList, utils::threading::get_worker_slice};
+use crate::{ciphers::base::{Cipher, CipherCodecContext, CipherWorkerContext, StandardCipherError}, data::message::MessageList, utils::{run::AnyErrorResult, threading::get_worker_slice}};
 
 /*
  * WARNING:
@@ -152,7 +152,7 @@ pub struct ARXCipher {
 }
 
 impl ARXCipher {
-    pub fn new(config: &Option<String>) -> Result<ARXCipher, Box<dyn std::error::Error>> {
+    pub fn new(config: &Option<String>) -> AnyErrorResult<ARXCipher> {
         match config {
             Some(s) => Ok(ARXCipher { round_count: s.parse::<usize>()? }),
             None => Err(StandardCipherError::MissingConfiguration.into()),

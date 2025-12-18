@@ -28,6 +28,15 @@ impl<T, const MAX_LEN: usize> StackVec<T, MAX_LEN> {
         *unsafe { self.data.get_unchecked_mut(self.len) } = val;
         self.len += 1;
     }
+
+    pub fn try_push(&mut self, val: T) -> Option<()> {
+        if self.len < MAX_LEN {
+            self.push(val);
+            Some(())
+        } else {
+            None
+        }
+    }
 }
 
 impl<T, const MAX_LEN: usize> Index<usize> for StackVec<T, MAX_LEN> {
