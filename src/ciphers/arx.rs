@@ -1,7 +1,11 @@
+use std::error::Error;
+
 use prost::Message;
 use rug::{Integer, ops::Pow};
 
 use crate::{ciphers::base::{Cipher, CipherCodecContext, CipherWorkerContext, StandardCipherError}, data::message::MessageList, utils::{run::AnyErrorResult, threading::get_worker_slice}};
+
+use super::base::CipherKey;
 
 /*
  * WARNING:
@@ -31,7 +35,7 @@ macro_rules! permute_round {
 }
 
 #[derive(prost::Message)]
-struct ARXRound {
+pub struct ARXRound {
     #[prost(uint32, tag = "2")]
     /** range: 0-7 */
     pub rot: u32,
@@ -44,35 +48,79 @@ struct ARXRound {
 }
 
 #[derive(prost::Message)]
-struct ARXKey {
+pub struct ARXKey {
     #[prost(message, repeated, tag = "1")]
     pub rounds: Vec<ARXRound>,
 }
 
-pub struct ARXCodecContext {
-    key: ARXKey,
-    ciphertexts: MessageList,
+impl ToString for ARXKey {
+    fn to_string(&self) -> String {
+        let mut parts = Vec::<String>::new();
+        for round in &self.rounds {
+            if round.add != 0 { parts.push(format!("a{}", round.add)) }
+            if round.rot != 0 { parts.push(format!("r{}", round.rot)) }
+            if round.xor != 0 { parts.push(format!("x{}", round.xor)) }
+        }
+
+        if parts.len() == 0 {
+            String::from("[no-op key]")
+        } else {
+            format!("[{}]", parts.join("->"))
+        }
+    }
 }
 
-impl CipherCodecContext for ARXCodecContext {
-    fn get_current_key_net(&self) -> Vec<u8> {
-        self.key.encode_to_vec()
+impl CipherKey for ARXKey {
+    fn encode_to_buffer(&self) -> Vec<u8> {
+        self.encode_to_vec()
     }
 
-    fn get_plaintext_name(&self, message_index: usize) -> String {
-        self.ciphertexts[message_index].name.clone()
+    fn from_buffer(buffer: &Vec<u8>) -> Result<Self, Box<dyn Error>> {
+        Ok(ARXKey::decode(buffer.as_slice())?)
+    }
+}
+
+pub struct ARXDecryptContext<'codec> {
+    key: &'codec ARXKey,
+    input_messages: &'codec MessageList,
+}
+
+impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXDecryptContext<'codec> {
+    fn new(input_messages: &'codec MessageList, key: &'codec ARXKey) -> Self {
+        ARXDecryptContext { input_messages, key }
     }
 
-    fn get_plaintext_count(&self) -> usize {
-        self.ciphertexts.len()
+    fn get_input_messages(&self) -> &MessageList {
+        self.input_messages
     }
 
-    fn get_plaintext_len(&self, message_index: usize) -> usize {
-        self.ciphertexts[message_index].data.len()
+    fn get_output(&self, message_index: usize, unit_index: usize) -> u8 {
+        let mut byte = self.input_messages[message_index].data[unit_index];
+
+        for round in self.key.rounds.iter().rev() {
+            byte = (byte ^ round.xor as u8).rotate_left(round.rot).wrapping_sub(round.add as u8);
+        }
+
+        byte
+    }
+}
+
+pub struct ARXEncryptContext<'codec> {
+    key: &'codec ARXKey,
+    input_messages: &'codec MessageList,
+}
+
+impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXEncryptContext<'codec> {
+    fn new(input_messages: &'codec MessageList, key: &'codec ARXKey) -> Self {
+        ARXEncryptContext { input_messages, key }
     }
 
-    fn decrypt(&self, message_index: usize, unit_index: usize) -> u8 {
-        let mut byte = self.ciphertexts[message_index].data[unit_index];
+    fn get_input_messages(&self) -> &MessageList {
+        self.input_messages
+    }
+
+    fn get_output(&self, message_index: usize, unit_index: usize) -> u8 {
+        let mut byte = self.input_messages[message_index].data[unit_index];
 
         for round in &self.key.rounds {
             byte = byte.wrapping_add(round.add as u8).rotate_right(round.rot) ^ (round.xor as u8);
@@ -89,20 +137,20 @@ pub struct ARXWorkerContext {
 }
 
 impl ARXWorkerContext {
-    fn permute_additional_round<KC: FnMut(&ARXCodecContext), CC: FnMut(&ARXCodecContext, u32) -> bool>(&self, r: usize, r_max: usize, codec_ctx: &mut ARXCodecContext, key_callback: &mut KC, chunk_callback: &mut CC) -> bool {
+    fn permute_additional_round<KC: FnMut(&ARXKey), CC: FnMut(&ARXKey, u32) -> bool>(&self, r: usize, r_max: usize, key: &mut ARXKey, key_callback: &mut KC, chunk_callback: &mut CC) -> bool {
         // TODO maybe do macro for this entire pattern, including the part in
         //      the other method?
         if r == unsafe { r_max.unchecked_sub(1) } {
             // last round, do occasional callback and don't recurse
-            permute_round!(codec_ctx.key.rounds[r], {
-                key_callback(codec_ctx)
+            permute_round!(key.rounds[r], {
+                key_callback(key)
             });
 
-            chunk_callback(codec_ctx, KEYS_PER_ROUND)
+            chunk_callback(key, KEYS_PER_ROUND)
         } else {
             // middle round, recurse
-            permute_round!(codec_ctx.key.rounds[r], {
-                if !self.permute_additional_round(r + 1, r_max, codec_ctx, key_callback, chunk_callback) {
+            permute_round!(key.rounds[r], {
+                if !self.permute_additional_round(r + 1, r_max, key, key_callback, chunk_callback) {
                     return false;
                 }
             });
@@ -112,8 +160,9 @@ impl ARXWorkerContext {
     }
 }
 
-impl CipherWorkerContext for ARXWorkerContext {
-    type DecryptionContext = ARXCodecContext;
+impl CipherWorkerContext<ARXKey> for ARXWorkerContext {
+    type DecryptionContext<'codec> = ARXDecryptContext<'codec>;
+    type EncryptionContext<'codec> = ARXEncryptContext<'codec>;
 
     fn get_total_keys(&self) -> Integer {
         if self.round_count == 0 { return Integer::new(); }
@@ -122,25 +171,22 @@ impl CipherWorkerContext for ARXWorkerContext {
         total
     }
 
-    fn permute_keys_interruptible<KC: FnMut(&ARXCodecContext), CC: FnMut(&ARXCodecContext, u32) -> bool>(&self, ciphertexts: &MessageList, key_callback: &mut KC, chunk_callback: &mut CC) {
+    fn permute_keys_interruptible<KC: FnMut(&ARXKey), CC: FnMut(&ARXKey, u32) -> bool>(&self, key_callback: &mut KC, chunk_callback: &mut CC) {
         let r_max: usize = self.round_count;
         if r_max == 0 { return }
 
-        let mut codec_ctx = ARXCodecContext {
-            key: ARXKey { rounds: Vec::with_capacity(r_max) },
-            ciphertexts: ciphertexts.clone(),
-        };
-        codec_ctx.key.rounds.resize_with(r_max, ARXRound::default);
+        let mut key = ARXKey { rounds: Vec::with_capacity(r_max) };
+        key.rounds.resize_with(r_max, ARXRound::default);
 
         if r_max == 1 {
-            permute_round!(codec_ctx.key.rounds[0], self.a_min, self.a_max, {
-                key_callback(&mut codec_ctx);
+            permute_round!(key.rounds[0], self.a_min, self.a_max, {
+                key_callback(&mut key);
             });
 
-            chunk_callback(&mut codec_ctx, (self.a_max - self.a_min + 1) * 256 * 8);
+            chunk_callback(&mut key, (self.a_max - self.a_min + 1) * 256 * 8);
         } else {
-            permute_round!(codec_ctx.key.rounds[0], self.a_min, self.a_max, {
-                if !self.permute_additional_round(1, r_max, &mut codec_ctx, key_callback, chunk_callback) { return }
+            permute_round!(key.rounds[0], self.a_min, self.a_max, {
+                if !self.permute_additional_round(1, r_max, &mut key, key_callback, chunk_callback) { return }
             });
         }
     }
@@ -161,6 +207,7 @@ impl ARXCipher {
 }
 
 impl Cipher for ARXCipher {
+    type Key = ARXKey;
     type Context = ARXWorkerContext;
 
     fn get_max_parallelism(&self) -> u32 { 256 }
@@ -173,9 +220,5 @@ impl Cipher for ARXCipher {
             a_min,
             a_max,
         }
-    }
-
-    fn net_key_to_string(&self, net_key: Vec<u8>) -> String {
-        format!("{:?}", ARXKey::decode(net_key.as_slice()))
     }
 }

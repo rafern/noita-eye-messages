@@ -12,7 +12,7 @@ use noita_eye_messages::utils::run::UnitResult;
 use prost::Message;
 use clap::Parser;
 use noita_eye_messages::analysis::unit_freq::UnitFrequency;
-use noita_eye_messages::ciphers::base::{Cipher, CipherWorkerContext, CipherCodecContext};
+use noita_eye_messages::ciphers::base::{Cipher, CipherCodecContext, CipherKey, CipherWorkerContext};
 use noita_eye_messages::ciphers::deserialise_cipher;
 use noita_eye_messages::data::key_dump::KeyDumpMeta;
 use rug::{Integer, Rational};
@@ -127,17 +127,17 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
     }
 }
 
-fn eval_pt<T: CipherWorkerContext>(codec_ctx: *const T::DecryptionContext, m: usize, u: usize) -> u8 {
-    unsafe { &*codec_ctx }.decrypt(m, u)
+fn eval_pt<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: *const T::DecryptionContext<'_>, m: usize, u: usize) -> u8 {
+    unsafe { &*codec_ctx }.get_output(m, u)
 }
 
-fn eval_pt_freq_dist_error<T: CipherWorkerContext>(codec_ctx: *const T::DecryptionContext, pt_freq_dist: *const OnceCell<UnitFrequency>, languages: *const Vec<UnitFrequency>, l: usize) -> f64 {
+fn eval_pt_freq_dist_error<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: *const T::DecryptionContext<'_>, pt_freq_dist: *const OnceCell<UnitFrequency>, languages: *const Vec<UnitFrequency>, l: usize) -> f64 {
     (unsafe { &*languages })[l].get_error(unsafe { &*pt_freq_dist }.get_or_init(|| {
-        UnitFrequency::from_messages(&unsafe { &*codec_ctx }.get_all_plaintexts())
+        UnitFrequency::from_messages(&unsafe { &*codec_ctx }.get_output_messages())
     }))
 }
 
-fn search_task<'str, T: CipherWorkerContext>(_worker_id: u32, messages: &MessageList, worker_ctx: T, cond_src: &'str String, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'str>> {
+fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, messages: &MessageList, worker_ctx: T, cond_src: &'str String, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'str>> {
     let mut jit_ctx = JITContext::new();
     let mut comp_ctx = jit_ctx.make_compilation_context()?;
     let mut pt_freq_dist = OnceCell::<UnitFrequency>::new();
@@ -146,7 +146,7 @@ fn search_task<'str, T: CipherWorkerContext>(_worker_id: u32, messages: &Message
     let pt_freq_dist_hsi = cond_table.add_hidden_state(ValueType::USize);
     let languages_hsi = cond_table.add_hidden_state(ValueType::USize);
 
-    cond_table.add_function_3_map("pt".into(), eval_pt::<T>,
+    cond_table.add_function_3_map("pt".into(), eval_pt::<K, T>,
         // codec_ctx: &T::DecryptionContext
         BindingFunctionParameter::from_hidden_state(codec_ctx_hsi),
         // m: usize
@@ -155,7 +155,7 @@ fn search_task<'str, T: CipherWorkerContext>(_worker_id: u32, messages: &Message
         ValueType::USize,
     )?;
 
-    cond_table.add_function_4_map("pt_freq_dist_error".into(), eval_pt_freq_dist_error::<T>,
+    cond_table.add_function_4_map("pt_freq_dist_error".into(), eval_pt_freq_dist_error::<K, T>,
         // codec_ctx: &T::DecryptionContext
         BindingFunctionParameter::from_hidden_state(codec_ctx_hsi),
         // pt_freq_dist: &OnceCell<UnitFrequency>
@@ -179,7 +179,7 @@ fn search_task<'str, T: CipherWorkerContext>(_worker_id: u32, messages: &Message
         },
     };
 
-    worker_ctx.permute_keys_interruptible(messages, &mut |codec_ctx| {
+    worker_ctx.permute_keys_interruptible(&mut |key| {
         // TODO clearing the cache results in a 5% slowdown. hot-eval should
         //      support pure functions, so that it reuses outputs when possible,
         //      otherwise we have to unnecessarily clear a cache and manage our
@@ -187,10 +187,11 @@ fn search_task<'str, T: CipherWorkerContext>(_worker_id: u32, messages: &Message
         //      expression
         pt_freq_dist.take(); // clear cache
 
-        slab.set_ptr_value(codec_ctx_hsi, codec_ctx);
+        let codec_ctx = T::DecryptionContext::new(messages, key);
+        slab.set_ptr_value(codec_ctx_hsi, &codec_ctx);
 
         if unsafe { jit_fn.call() } {
-            tx.send(TaskPacket::Match { net_key: codec_ctx.get_current_key_net() }).unwrap();
+            tx.send(TaskPacket::Match { net_key: key.encode_to_buffer() }).unwrap();
         }
     }, &mut |_codec_ctx, keys| {
         tx.send(TaskPacket::Progress { keys }).unwrap();
@@ -291,7 +292,7 @@ fn main() { main_error_wrap!({
                                     file.write(net_key.encode_to_vec().as_slice())?;
                                 },
                                 None => {
-                                    println!("Matched key {}", cipher.net_key_to_string(net_key));
+                                    println!("Matched key {}", cipher.net_key_to_string(net_key)?);
                                 },
                             }
                         },

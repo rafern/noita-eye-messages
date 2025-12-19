@@ -24,48 +24,51 @@ impl fmt::Display for StandardCipherError {
 
 impl Error for StandardCipherError {}
 
-pub trait CipherCodecContext {
-    fn get_current_key_net(&self) -> Vec<u8>;
-    fn get_plaintext_name(&self, message_index: usize) -> String;
-    fn get_plaintext_count(&self) -> usize;
-    fn get_plaintext_len(&self, message_index: usize) -> usize;
-    /**
-     * NOTE: use interior mutability if you need to cache results. For example, a cipher that depends on previous values
-     */
-    fn decrypt(&self, message_index: usize, unit_index: usize) -> u8;
-    // TODO encrypt
+pub trait CipherKey: Sized + ToString {
+    fn encode_to_buffer(&self) -> Vec<u8>;
+    fn from_buffer(buffer: &Vec<u8>) -> Result<Self, Box<dyn Error>>;
+}
 
-    fn get_plaintext(&self, message_index: usize) -> Message {
+/// NOTE: use interior mutability if you need to cache results. For example, a
+///       cipher that depends on previous values, like autokey ciphers
+pub trait CipherCodecContext<'codec, Key: CipherKey> {
+    fn new(input_messages: &'codec MessageList, key: &'codec Key) -> Self;
+    fn get_input_messages(&self) -> &MessageList;
+    fn get_output(&self, message_index: usize, unit_index: usize) -> u8;
+
+    fn get_output_message(&self, message_index: usize) -> Message {
         let mut data = StackVec::default();
-        for i in 0..self.get_plaintext_len(message_index) {
-            data.push(self.decrypt(message_index, i));
+        let msg = &self.get_input_messages()[message_index];
+        for i in 0..msg.data.len() {
+            data.push(self.get_output(message_index, i));
         }
 
-        Message { name: self.get_plaintext_name(message_index), data }
+        Message { name: msg.name.clone(), data }
     }
 
-    fn get_all_plaintexts(&self) -> MessageList {
+    fn get_output_messages(&self) -> MessageList {
         let mut messages = MessageList::default();
-        for m in 0..self.get_plaintext_count() {
-            messages.push(self.get_plaintext(m));
+        for m in 0..self.get_input_messages().len() {
+            messages.push(self.get_output_message(m));
         }
 
         messages
     }
 }
 
-pub trait CipherWorkerContext: Send {
-    type DecryptionContext: CipherCodecContext;
+pub trait CipherWorkerContext<Key: CipherKey>: Send {
+    type DecryptionContext<'codec>: CipherCodecContext<'codec, Key>;
+    type EncryptionContext<'codec>: CipherCodecContext<'codec, Key>;
 
     fn get_total_keys(&self) -> Integer;
     /**
      * key_callback must be called for each key
      * chunk_callback must be called at least every u32::MAX keys
      */
-    fn permute_keys_interruptible<KC: FnMut(&Self::DecryptionContext), CC: FnMut(&Self::DecryptionContext, u32) -> bool>(&self, ciphertexts: &MessageList, key_callback: &mut KC, chunk_callback: &mut CC);
+    fn permute_keys_interruptible<KC: FnMut(&Key), CC: FnMut(&Key, u32) -> bool>(&self, key_callback: &mut KC, chunk_callback: &mut CC);
 
-    fn permute_keys<KC: FnMut(&Self::DecryptionContext)>(&self, ciphertexts: &MessageList, key_callback: &mut KC) {
-        self.permute_keys_interruptible(ciphertexts, key_callback, &mut |_, _| { true });
+    fn permute_keys<KC: FnMut(&Key)>(&self, key_callback: &mut KC) {
+        self.permute_keys_interruptible(key_callback, &mut |_, _| { true });
     }
 }
 
@@ -76,11 +79,15 @@ pub trait CipherWorkerContext: Send {
  *      for weird reasons)
  */
 pub trait Cipher {
-    type Context: CipherWorkerContext;
+    type Key: CipherKey;
+    type Context: CipherWorkerContext<Self::Key>;
 
     fn get_max_parallelism(&self) -> u32;
     fn create_worker_context_parallel(&self, worker_id: u32, worker_total: u32) -> Self::Context;
-    fn net_key_to_string(&self, net_key: Vec<u8>) -> String;
+
+    fn net_key_to_string(&self, net_key: Vec<u8>) -> Result<String, Box<dyn Error>> {
+        Ok(Self::Key::from_buffer(&net_key)?.to_string())
+    }
 
     fn create_worker_context(&self) -> Self::Context {
         self.create_worker_context_parallel(0, 1)
