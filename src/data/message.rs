@@ -1,12 +1,9 @@
 use crate::utils::stackvec::StackVec;
 
-pub const MAX_MESSAGE_COUNT: usize = 9;
-pub const MAX_MESSAGE_SIZE: usize = 256 - 24;
-
 #[derive(Clone, Default)]
 pub struct Message {
     pub name: String,
-    pub data: StackVec<u8, MAX_MESSAGE_SIZE>,
+    pub data: StackVec<u8, 137>,
 }
 
 impl Message {
@@ -15,7 +12,7 @@ impl Message {
     }
 }
 
-pub type MessageList = StackVec<Message, MAX_MESSAGE_COUNT>;
+pub type MessageList = StackVec<Message, 9>;
 
 pub enum MessageRenderGroup {
     Plaintext { grapheme: String },

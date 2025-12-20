@@ -1,111 +1,131 @@
-use std::{mem::MaybeUninit, ops::{Index, IndexMut}};
+use std::{hint::cold_path, mem::MaybeUninit, ops::{Index, IndexMut}};
 
-pub struct StackVec<T, const MAX_LEN: usize> {
-    len: usize,
-    data: [MaybeUninit<T>; MAX_LEN],
+pub struct StackVec<T, const MAX_SMALL_LEN: usize> {
+    small_len: usize,
+    small_data: [MaybeUninit<T>; MAX_SMALL_LEN],
+    big_data: Vec<T>,
 }
 
-pub struct StackVecIter<'a, T, const MAX_LEN: usize> {
-    vec: &'a StackVec<T, MAX_LEN>,
+pub struct StackVecIter<'a, T, const MAX_SMALL_LEN: usize> {
+    vec: &'a StackVec<T, MAX_SMALL_LEN>,
     head: usize,
     tail: usize,
 }
 
-impl<T, const MAX_LEN: usize> StackVec<T, MAX_LEN> {
-    pub fn new() -> Self {
+impl<T, const MAX_SMALL_LEN: usize> StackVec<T, MAX_SMALL_LEN> {
+    pub const fn new() -> Self {
         Self {
-            len: 0,
-            data: [const { MaybeUninit::uninit() }; MAX_LEN],
+            small_data: [const { MaybeUninit::uninit() }; MAX_SMALL_LEN],
+            small_len: 0,
+            big_data: Vec::new(),
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.len
+    #[inline]
+    pub const fn len(&self) -> usize {
+        let len = self.small_len;
+        unsafe { std::hint::assert_unchecked(len < MAX_SMALL_LEN) };
+        unsafe { len.unchecked_add(self.big_data.len()) }
     }
 
-    pub fn iter(&'_ self) -> StackVecIter<'_, T, MAX_LEN> {
+    pub const fn iter(&'_ self) -> StackVecIter<'_, T, MAX_SMALL_LEN> {
         StackVecIter {
             vec: self,
             head: 0,
-            tail: self.len,
+            tail: self.len(),
         }
     }
 
-    pub fn push(&mut self, val: T) -> usize {
-        debug_assert!(self.len < MAX_LEN);
-        unsafe { self.data.get_unchecked_mut(self.len) }.write(val);
-        let idx = self.len;
-        self.len += 1;
-        idx
-    }
-
-    pub fn try_push(&mut self, val: T) -> Option<usize> {
-        if self.len < MAX_LEN {
-            Some(self.push(val))
+    pub fn push(&mut self, val: T) {
+        if self.small_len < MAX_SMALL_LEN {
+            unsafe { self.small_data.get_unchecked_mut(self.small_len) }.write(val);
+            self.small_len += 1;
         } else {
-            None
+            self.big_data.push(val);
         }
     }
 
     pub fn resize_with<F>(&mut self, new_len: usize, mut f: F)
     where F: FnMut() ->  T
     {
-        if new_len > self.len {
-            for i in self.len..new_len {
-                self.data[i].write(f());
+        let new_small_len = new_len.min(MAX_SMALL_LEN);
+        if new_small_len > self.small_len {
+            for i in self.small_len..new_small_len {
+                self.small_data[i].write(f());
             }
-        } else if new_len < self.len {
-            for i in new_len..self.len {
-                unsafe { self.data[i].assume_init_drop() };
+        } else if new_small_len < self.small_len {
+            for i in new_small_len..self.small_len {
+                unsafe { self.small_data[i].assume_init_drop() };
             }
-
-            self.len = new_len;
         }
+
+        self.small_len = new_small_len;
+        self.big_data.resize_with(new_len.saturating_sub(MAX_SMALL_LEN), f);
     }
 }
 
-impl<T, const MAX_LEN: usize> Default for StackVec<T, MAX_LEN> {
+impl<T, const MAX_SMALL_LEN: usize> Default for StackVec<T, MAX_SMALL_LEN> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Clone, const MAX_LEN: usize> Clone for StackVec<T, MAX_LEN> {
+impl<T: Clone, const MAX_SMALL_LEN: usize> Clone for StackVec<T, MAX_SMALL_LEN> {
     fn clone(&self) -> Self {
-        let mut clone = Self::new();
-        clone.len = self.len;
-        for i in 0..self.len {
-            clone.data[i].write(unsafe { self.data[i].assume_init_ref() }.clone());
+        let mut small_data = [const { MaybeUninit::uninit() }; MAX_SMALL_LEN];
+        for i in 0..self.small_len {
+            small_data[i].write(unsafe { self.small_data[i].assume_init_ref() }.clone());
         }
 
-        clone
+        Self {
+            small_data,
+            small_len: self.small_len,
+            big_data: self.big_data.clone(),
+        }
     }
 }
 
-impl<T, const MAX_LEN: usize> Drop for StackVec<T, MAX_LEN> {
+impl<T, const MAX_SMALL_LEN: usize> Drop for StackVec<T, MAX_SMALL_LEN> {
     fn drop(&mut self) {
-        for i in 0..self.len {
-            unsafe { self.data[i].assume_init_drop() };
+        for i in 0..self.small_len {
+            unsafe { self.small_data[i].assume_init_drop() };
         }
     }
 }
 
-impl<T, const MAX_LEN: usize> Index<usize> for StackVec<T, MAX_LEN> {
+impl<T, const MAX_SMALL_LEN: usize> Index<usize> for StackVec<T, MAX_SMALL_LEN> {
     type Output = T;
+    #[inline]
     fn index(&self, idx: usize) -> &<Self as Index<usize>>::Output {
-        debug_assert!(idx < self.len);
-        unsafe { self.data.get_unchecked(idx).assume_init_ref() }
+        if idx < MAX_SMALL_LEN {
+            debug_assert!(idx < self.small_len);
+            unsafe { self.small_data.get_unchecked(idx).assume_init_ref() }
+        } else {
+            cold_path();
+            let big_idx = idx - MAX_SMALL_LEN;
+            debug_assert!(big_idx < self.big_data.len());
+            unsafe { self.big_data.get_unchecked(big_idx) }
+        }
     }
 }
 
-impl<T, const MAX_LEN: usize> IndexMut<usize> for StackVec<T, MAX_LEN> {
+impl<T, const MAX_SMALL_LEN: usize> IndexMut<usize> for StackVec<T, MAX_SMALL_LEN> {
+    #[inline]
     fn index_mut(&mut self, idx: usize) -> &mut <Self as Index<usize>>::Output {
-        debug_assert!(idx < self.len);
-        unsafe { self.data.get_unchecked_mut(idx).assume_init_mut() }
+        debug_assert!(idx < self.small_len);
+        if idx < MAX_SMALL_LEN {
+            debug_assert!(idx < self.small_len);
+            unsafe { self.small_data.get_unchecked_mut(idx).assume_init_mut() }
+        } else {
+            cold_path();
+            let big_idx = idx - MAX_SMALL_LEN;
+            debug_assert!(big_idx < self.big_data.len());
+            unsafe { self.big_data.get_unchecked_mut(big_idx) }
+        }
     }
 }
 
-impl<'a, T, const MAX_LEN: usize> Iterator for StackVecIter<'a, T, MAX_LEN> {
+impl<'a, T, const MAX_SMALL_LEN: usize> Iterator for StackVecIter<'a, T, MAX_SMALL_LEN> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -119,7 +139,7 @@ impl<'a, T, const MAX_LEN: usize> Iterator for StackVecIter<'a, T, MAX_LEN> {
     }
 }
 
-impl<'a, T, const MAX_LEN: usize> DoubleEndedIterator for StackVecIter<'a, T, MAX_LEN> {
+impl<'a, T, const MAX_SMALL_LEN: usize> DoubleEndedIterator for StackVecIter<'a, T, MAX_SMALL_LEN> {
     fn next_back(&mut self) -> Option<<Self as Iterator>::Item> {
         if self.head < self.tail {
             self.tail -= 1;
