@@ -176,14 +176,21 @@ impl ARXWorkerContext {
         //      the other method?
         if r == r_max {
             // last round, do occasional callback and don't recurse
-            permute_round!(key.rounds[r], {
+            // SAFETY: the caller must guarantee that r_max < key.rounds.len(),
+            //         and that r <= r_max
+            permute_round!(unsafe { key.rounds.get_unchecked_mut(r) }, {
                 key_callback(key)
             });
 
             chunk_callback(key, KEYS_PER_ROUND)
         } else {
             // middle round, recurse
-            permute_round!(key.rounds[r], {
+            // SAFETY: the caller must guarantee that r_max < key.rounds.len(),
+            //         and that r <= r_max
+            permute_round!(unsafe { key.rounds.get_unchecked_mut(r) }, {
+                // SAFETY: r must be < r_max when calling this method, so this
+                //         is only invalid when the caller passes bad arguments
+                //         (hence why this method is unsafe)
                 if !unsafe { self.permute_additional_round(r + 1, r_max, key, key_callback, chunk_callback) } {
                     return false;
                 }
