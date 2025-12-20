@@ -30,7 +30,6 @@ impl AsyncTaskList {
     }
 
     pub fn add_async_or_sync<F: FnMut() + Send + 'static>(&mut self, task: F) {
-        // FIXME surely there's a better way to do this, right?
         let task_wrapper = Arc::new(Mutex::new(task));
         let task_wrapper_clone = task_wrapper.clone();
 
@@ -66,12 +65,12 @@ impl Semaphore {
 }
 
 pub fn get_worker_slice<T>(max_value: T, worker_id: u32, worker_total: u32) -> (T, T) where
-    T: TryFrom<u64> + Into<u64> + Copy,
-    <T as TryFrom<u64>>::Error: std::fmt::Debug
+    T: TryFrom<usize> + Into<usize> + Copy,
+    <T as TryFrom<usize>>::Error: std::fmt::Debug
 {
     // TODO this is a really shitty method. improve it
-    let min = (worker_id as u64 * (T::into(max_value) + 1)) / worker_total as u64;
-    let max = ((worker_id + 1) as u64 * (T::into(max_value) + 1)) / worker_total as u64;
+    let min = (worker_id as usize * (T::into(max_value) + 1)) / worker_total as usize;
+    let max = ((worker_id + 1) as usize * (T::into(max_value) + 1)) / worker_total as usize;
     (T::try_from(min).unwrap(), T::try_from(max - 1).unwrap())
 }
 

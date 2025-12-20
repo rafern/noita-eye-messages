@@ -3,7 +3,7 @@ use std::error::Error;
 use prost::Message;
 use rug::{Integer, ops::Pow};
 
-use crate::{ciphers::base::{Cipher, CipherCodecContext, CipherWorkerContext, StandardCipherError}, data::message::MessageList, utils::{run::AnyErrorResult, threading::get_worker_slice}};
+use crate::{ciphers::base::{Cipher, CipherCodecContext, CipherWorkerContext, StandardCipherError}, data::message::MessageList, utils::{run::AnyErrorResult, stackvec::StackVec, threading::get_worker_slice}};
 
 use super::base::CipherKey;
 
@@ -18,7 +18,7 @@ const KEYS_PER_ROUND: u32 = 524288;
 
 macro_rules! permute_round {
     ($round:expr, $add_min:expr, $add_max:expr, $callback:block) => {
-        for add in $add_min..=$add_max {
+        for add in $add_min as u8..=$add_max as u8 {
             $round.add = add;
             for xor in 0..=255 {
                 $round.xor = xor;
@@ -35,28 +35,43 @@ macro_rules! permute_round {
 }
 
 #[derive(prost::Message)]
-pub struct ARXRound {
-    #[prost(uint32, tag = "2")]
-    /** range: 0-7 */
-    pub rot: u32,
+struct EncodedARXRound {
     #[prost(uint32, tag = "1")]
     /** range: 0-255 */
     pub add: u32,
+    #[prost(uint32, tag = "2")]
+    /** range: 0-7 */
+    pub rot: u32,
     #[prost(uint32, tag = "3")]
     /** range: 0-255 */
     pub xor: u32,
 }
 
 #[derive(prost::Message)]
-pub struct ARXKey {
+struct EncodedARXKey {
     #[prost(message, repeated, tag = "1")]
-    pub rounds: Vec<ARXRound>,
+    pub rounds: Vec<EncodedARXRound>,
+}
+
+#[derive(Default)]
+pub struct ARXRound {
+    /** range: 0-255 */
+    pub add: u8,
+    /** range: 0-7 */
+    pub rot: u8,
+    /** range: 0-255 */
+    pub xor: u8,
+}
+
+#[derive(Default)]
+pub struct ARXKey {
+    pub rounds: StackVec<ARXRound, 8>,
 }
 
 impl ToString for ARXKey {
     fn to_string(&self) -> String {
         let mut parts = Vec::<String>::new();
-        for round in &self.rounds {
+        for round in self.rounds.iter() {
             if round.add != 0 { parts.push(format!("a{}", round.add)) }
             if round.rot != 0 { parts.push(format!("r{}", round.rot)) }
             if round.xor != 0 { parts.push(format!("x{}", round.xor)) }
@@ -72,11 +87,30 @@ impl ToString for ARXKey {
 
 impl CipherKey for ARXKey {
     fn encode_to_buffer(&self) -> Vec<u8> {
-        self.encode_to_vec()
+        let mut enc_key = EncodedARXKey::default();
+        for round in self.rounds.iter() {
+            enc_key.rounds.push(EncodedARXRound {
+                rot: round.rot as u32,
+                add: round.add as u32,
+                xor: round.xor as u32,
+            });
+        }
+
+        enc_key.encode_to_vec()
     }
 
     fn from_buffer(buffer: &Vec<u8>) -> Result<Self, Box<dyn Error>> {
-        Ok(ARXKey::decode(buffer.as_slice())?)
+        let enc_key = EncodedARXKey::decode(buffer.as_slice())?;
+        let mut key = ARXKey::default();
+        for enc_round in enc_key.rounds {
+            key.rounds.push(ARXRound {
+                rot: enc_round.rot.try_into()?,
+                add: enc_round.add.try_into()?,
+                xor: enc_round.xor.try_into()?,
+            });
+        }
+
+        Ok(key)
     }
 }
 
@@ -98,7 +132,7 @@ impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXDecryptContext<'codec> {
         let mut byte = self.input_messages[message_index].data[unit_index];
 
         for round in self.key.rounds.iter().rev() {
-            byte = (byte ^ round.xor as u8).rotate_left(round.rot).wrapping_sub(round.add as u8);
+            byte = (byte ^ round.xor).rotate_left(round.rot as u32).wrapping_sub(round.add);
         }
 
         byte
@@ -122,8 +156,8 @@ impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXEncryptContext<'codec> {
     fn get_output(&self, message_index: usize, unit_index: usize) -> u8 {
         let mut byte = self.input_messages[message_index].data[unit_index];
 
-        for round in &self.key.rounds {
-            byte = byte.wrapping_add(round.add as u8).rotate_right(round.rot) ^ (round.xor as u8);
+        for round in self.key.rounds.iter() {
+            byte = byte.wrapping_add(round.add).rotate_right(round.rot as u32) ^ round.xor;
         }
 
         byte
@@ -131,9 +165,9 @@ impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXEncryptContext<'codec> {
 }
 
 pub struct ARXWorkerContext {
-    a_min: u32,
-    a_max: u32,
     round_count: usize,
+    a_min: u8,
+    a_max: u8,
 }
 
 impl ARXWorkerContext {
@@ -175,7 +209,7 @@ impl CipherWorkerContext<ARXKey> for ARXWorkerContext {
         let r_max: usize = self.round_count;
         if r_max == 0 { return }
 
-        let mut key = ARXKey { rounds: Vec::with_capacity(r_max) };
+        let mut key = ARXKey { rounds: StackVec::new() };
         key.rounds.resize_with(r_max, ARXRound::default);
 
         if r_max == 1 {
@@ -183,7 +217,7 @@ impl CipherWorkerContext<ARXKey> for ARXWorkerContext {
                 key_callback(&mut key);
             });
 
-            chunk_callback(&mut key, (self.a_max - self.a_min + 1) * 256 * 8);
+            chunk_callback(&mut key, (self.a_max as u32 - self.a_min as u32 + 1) * 256 * 8);
         } else {
             permute_round!(key.rounds[0], self.a_min, self.a_max, {
                 if !self.permute_additional_round(1, r_max, &mut key, key_callback, chunk_callback) { return }
@@ -213,7 +247,7 @@ impl Cipher for ARXCipher {
     fn get_max_parallelism(&self) -> u32 { 256 }
 
     fn create_worker_context_parallel(&self, worker_id: u32, worker_total: u32) -> <ARXCipher as Cipher>::Context {
-        let (a_min, a_max) = get_worker_slice::<u32>(255, worker_id, worker_total);
+        let (a_min, a_max) = get_worker_slice::<u8>(255, worker_id, worker_total);
 
         ARXWorkerContext {
             round_count: self.round_count,

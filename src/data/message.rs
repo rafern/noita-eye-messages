@@ -11,7 +11,7 @@ pub struct Message {
 
 impl Message {
     pub fn from_name(name: String) -> Self {
-        Self { name, data: StackVec::default() }
+        Self { name, data: StackVec::new() }
     }
 }
 

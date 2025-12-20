@@ -37,7 +37,7 @@ pub trait CipherCodecContext<'codec, Key: CipherKey> {
     fn get_output(&self, message_index: usize, unit_index: usize) -> u8;
 
     fn get_output_message(&self, message_index: usize) -> Message {
-        let mut data = StackVec::default();
+        let mut data = StackVec::new();
         let msg = &self.get_input_messages()[message_index];
         for i in 0..msg.data.len() {
             data.push(self.get_output(message_index, i));

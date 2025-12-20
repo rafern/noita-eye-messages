@@ -212,13 +212,12 @@ fn main() { main_error_wrap!({
     let mut key_dump_file: Option<File> = match &args.key_dump_path {
         Some(path) => {
             let mut file = File::create_new(path)?;
-            let meta = KeyDumpMeta {
+            file.write(KeyDumpMeta {
                 build_hash: String::from(env!("GIT_HASH")),
                 cipher_name: args.cipher.clone(),
                 cipher_config: args.config.clone(),
-            };
-            // FIXME is there a way to write directly to the file?
-            file.write(meta.encode_to_vec().as_slice())?;
+            }.encode_to_vec().as_slice())?;
+
             Some(file)
         },
         None => None,
@@ -288,8 +287,7 @@ fn main() { main_error_wrap!({
                         TaskPacket::Match { net_key } => {
                             match key_dump_file {
                                 Some(ref mut file) => {
-                                    // FIXME is there a way to write directly to the file?
-                                    file.write(net_key.encode_to_vec().as_slice())?;
+                                    file.write(net_key.as_slice())?;
                                 },
                                 None => {
                                     println!("Matched key {}", cipher.net_key_to_string(net_key)?);
