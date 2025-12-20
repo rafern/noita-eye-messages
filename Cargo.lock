@@ -1369,6 +1369,7 @@ dependencies = [
  "minifb 0.28.0",
  "prost",
  "rug",
+ "smallvec",
  "tikv-jemallocator",
  "unicode-segmentation",
 ]

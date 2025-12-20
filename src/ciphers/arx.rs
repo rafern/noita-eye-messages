@@ -171,10 +171,10 @@ pub struct ARXWorkerContext {
 }
 
 impl ARXWorkerContext {
-    fn permute_additional_round<KC: FnMut(&ARXKey), CC: FnMut(&ARXKey, u32) -> bool>(&self, r: usize, r_max: usize, key: &mut ARXKey, key_callback: &mut KC, chunk_callback: &mut CC) -> bool {
+    unsafe fn permute_additional_round<KC: FnMut(&ARXKey), CC: FnMut(&ARXKey, u32) -> bool>(&self, r: usize, r_max: usize, key: &mut ARXKey, key_callback: &mut KC, chunk_callback: &mut CC) -> bool {
         // TODO maybe do macro for this entire pattern, including the part in
         //      the other method?
-        if r == unsafe { r_max.unchecked_sub(1) } {
+        if r == r_max {
             // last round, do occasional callback and don't recurse
             permute_round!(key.rounds[r], {
                 key_callback(key)
@@ -184,7 +184,7 @@ impl ARXWorkerContext {
         } else {
             // middle round, recurse
             permute_round!(key.rounds[r], {
-                if !self.permute_additional_round(r + 1, r_max, key, key_callback, chunk_callback) {
+                if !unsafe { self.permute_additional_round(r + 1, r_max, key, key_callback, chunk_callback) } {
                     return false;
                 }
             });
@@ -206,13 +206,13 @@ impl CipherWorkerContext<ARXKey> for ARXWorkerContext {
     }
 
     fn permute_keys_interruptible<KC: FnMut(&ARXKey), CC: FnMut(&ARXKey, u32) -> bool>(&self, key_callback: &mut KC, chunk_callback: &mut CC) {
-        let r_max: usize = self.round_count;
-        if r_max == 0 { return }
+        let round_count: usize = self.round_count;
+        if round_count == 0 { return }
 
         let mut key = ARXKey { rounds: StackVec::new() };
-        key.rounds.resize_with(r_max, ARXRound::default);
+        key.rounds.resize_with(round_count, ARXRound::default);
 
-        if r_max == 1 {
+        if round_count == 1 {
             permute_round!(key.rounds[0], self.a_min, self.a_max, {
                 key_callback(&mut key);
             });
@@ -220,7 +220,7 @@ impl CipherWorkerContext<ARXKey> for ARXWorkerContext {
             chunk_callback(&mut key, (self.a_max as u32 - self.a_min as u32 + 1) * 256 * 8);
         } else {
             permute_round!(key.rounds[0], self.a_min, self.a_max, {
-                if !self.permute_additional_round(1, r_max, &mut key, key_callback, chunk_callback) { return }
+                if !unsafe { self.permute_additional_round(1, round_count - 1, &mut key, key_callback, chunk_callback) } { return }
             });
         }
     }

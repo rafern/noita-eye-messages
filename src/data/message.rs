@@ -1,21 +1,26 @@
+use smallvec::SmallVec;
+
 use crate::utils::stackvec::StackVec;
 
-pub const MAX_MESSAGE_COUNT: usize = 9;
-pub const MAX_MESSAGE_SIZE: usize = 256 - 24;
+// TODO separate metadata (name) from data, and interleave messages so that
+//      indices from different messages are near each other, which should
+//      provide a substancial speed-up due to better cache locality
 
 #[derive(Clone, Default)]
 pub struct Message {
-    pub name: String,
-    pub data: StackVec<u8, MAX_MESSAGE_SIZE>,
+    // only need 137 for original messages, but can get 143 for free due to
+    // alignment requirements
+    pub data: SmallVec<[u8; 143]>,
+    pub name: Box<str>,
 }
 
 impl Message {
     pub fn from_name(name: String) -> Self {
-        Self { name, data: StackVec::new() }
+        Self { name: name.into_boxed_str(), data: SmallVec::new() }
     }
 }
 
-pub type MessageList = StackVec<Message, MAX_MESSAGE_COUNT>;
+pub type MessageList = StackVec<Message, 9>;
 
 pub enum MessageRenderGroup {
     Plaintext { grapheme: String },

@@ -1,9 +1,9 @@
 use std::fmt::{self, Debug};
 use std::error::Error;
 use rug::Integer;
+use smallvec::SmallVec;
 
 use crate::data::message::{Message, MessageList};
-use crate::utils::stackvec::StackVec;
 
 #[derive(Debug)]
 pub enum StandardCipherError {
@@ -37,7 +37,7 @@ pub trait CipherCodecContext<'codec, Key: CipherKey> {
     fn get_output(&self, message_index: usize, unit_index: usize) -> u8;
 
     fn get_output_message(&self, message_index: usize) -> Message {
-        let mut data = StackVec::new();
+        let mut data = SmallVec::new();
         let msg = &self.get_input_messages()[message_index];
         for i in 0..msg.data.len() {
             data.push(self.get_output(message_index, i));

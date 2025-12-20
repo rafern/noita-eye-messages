@@ -12,6 +12,7 @@ hot-eval = { version = "0.0.3", git = "https://github.com/rafern/hot-eval-rs.git
 minifb = "0.28.0"
 prost = "0.14.1"
 rug = { version = "1.28.0", default-features = false, features = ["integer", "rational"] }
+smallvec = { version = "1.15.1", features = ["const_generics"] }
 unicode-segmentation = "1.12.0"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]

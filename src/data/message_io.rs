@@ -48,16 +48,13 @@ pub fn import_csv_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> An
                         return Err(InvalidFormatError { kind: InvalidFormatErrorKind::EmptyMessageName, row: r, col: c }.into());
                     }
 
-                    message.name = String::from(col_trim);
+                    message.name = col_trim.into();
                     first = false;
                 } else {
                     let unit = col.parse::<u8>().or(Err(InvalidFormatError { kind: InvalidFormatErrorKind::InvalidDatum, row: r, col: c }))?;
                     if alphabet.get_unit(unit).is_some() {
-                        if let Some(unit_idx) = message.data.try_push(unit) {
-                            render_msg_builder.push_unit(unit_idx);
-                        } else {
-                            return Err(InvalidFormatError { kind: InvalidFormatErrorKind::MessageLengthLimitExceeded, row: r, col: c }.into());
-                        }
+                        message.data.push(unit);
+                        render_msg_builder.push_unit(message.data.len() - 1);
                     } else {
                         render_msg_builder.push_hex(unit);
                     }
@@ -70,10 +67,7 @@ pub fn import_csv_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> An
                 return Err(InvalidFormatError { kind: InvalidFormatErrorKind::EmptyMessage, row: r, col: c }.into());
             }
 
-            if messages.try_push(message).is_none() {
-                return Err(InvalidFormatError { kind: InvalidFormatErrorKind::MessageLimitExceeded, row: r, col: c }.into());
-            }
-
+            messages.push(message);
             render_messages.push(render_msg_builder.done());
         }
 
@@ -96,31 +90,22 @@ pub fn import_txt_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> An
     for row in txt.split('\n') {
         let mut message = Message::from_name(format!("message-{}", messages.len()).into());
         let mut render_msg_builder = RenderMessageBuilder::new();
-        let mut c = 0;
 
         for grapheme in row.graphemes(true) {
             let unit = alphabet.get_unit_idx(&grapheme.into());
             if let Some(unit) = unit {
-                if let Some(unit_idx) = message.data.try_push(unit) {
-                    render_msg_builder.push_unit(unit_idx);
-                } else {
-                    return Err(InvalidFormatError { kind: InvalidFormatErrorKind::MessageLengthLimitExceeded, row: r, col: c }.into());
-                }
+                message.data.push(unit);
+                render_msg_builder.push_unit(message.data.len() - 1);
             } else {
                 render_msg_builder.push_plaintext(String::from(grapheme));
             }
-
-            c += 1;
         }
 
         if message.data.len() == 0 {
             return Err(InvalidFormatError { kind: InvalidFormatErrorKind::EmptyMessage, row: r, col: 0 }.into());
         }
 
-        if messages.try_push(message).is_none() {
-            return Err(InvalidFormatError { kind: InvalidFormatErrorKind::MessageLimitExceeded, row: r, col: 0 }.into());
-        }
-
+        messages.push(message);
         render_messages.push(render_msg_builder.done());
         r += 1;
     }

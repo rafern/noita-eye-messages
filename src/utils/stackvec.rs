@@ -11,6 +11,8 @@ pub struct StackVecIter<'a, T, const MAX_LEN: usize> {
     tail: usize,
 }
 
+/// Use this like you would use the ArrayVec crate; basically a stack-allocated
+/// vector with a limited size, optimised for cache locality
 impl<T, const MAX_LEN: usize> StackVec<T, MAX_LEN> {
     pub fn new() -> Self {
         Self {
@@ -31,20 +33,10 @@ impl<T, const MAX_LEN: usize> StackVec<T, MAX_LEN> {
         }
     }
 
-    pub fn push(&mut self, val: T) -> usize {
+    pub fn push(&mut self, val: T) {
         debug_assert!(self.len < MAX_LEN);
         unsafe { self.data.get_unchecked_mut(self.len) }.write(val);
-        let idx = self.len;
         self.len += 1;
-        idx
-    }
-
-    pub fn try_push(&mut self, val: T) -> Option<usize> {
-        if self.len < MAX_LEN {
-            Some(self.push(val))
-        } else {
-            None
-        }
     }
 
     pub fn resize_with<F>(&mut self, new_len: usize, mut f: F)
