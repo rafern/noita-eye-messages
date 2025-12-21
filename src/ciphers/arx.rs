@@ -128,8 +128,9 @@ impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXDecryptContext<'codec> {
         self.input_messages
     }
 
-    fn get_output(&self, message_index: usize, unit_index: usize) -> u8 {
-        let mut byte = self.input_messages[message_index].data[unit_index];
+    unsafe fn get_output_unchecked(&self, message_index: usize, unit_index: usize) -> u8 {
+        // SAFETY: bounds must be verified by caller
+        let mut byte = unsafe { *self.input_messages.get_unchecked(message_index).data.get_unchecked(unit_index) };
 
         for round in self.key.rounds.iter().rev() {
             byte = (byte ^ round.xor).rotate_left(round.rot as u32).wrapping_sub(round.add);
@@ -153,8 +154,9 @@ impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXEncryptContext<'codec> {
         self.input_messages
     }
 
-    fn get_output(&self, message_index: usize, unit_index: usize) -> u8 {
-        let mut byte = self.input_messages[message_index].data[unit_index];
+    unsafe fn get_output_unchecked(&self, message_index: usize, unit_index: usize) -> u8 {
+        // SAFETY: bounds must be verified by caller
+        let mut byte = unsafe { *self.input_messages.get_unchecked(message_index).data.get_unchecked(unit_index) };
 
         for round in self.key.rounds.iter() {
             byte = byte.wrapping_add(round.add).rotate_right(round.rot as u32) ^ round.xor;

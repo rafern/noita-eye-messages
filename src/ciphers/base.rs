@@ -34,13 +34,24 @@ pub trait CipherKey: Sized + ToString {
 pub trait CipherCodecContext<'codec, Key: CipherKey> {
     fn new(input_messages: &'codec MessageList, key: &'codec Key) -> Self;
     fn get_input_messages(&self) -> &MessageList;
-    fn get_output(&self, message_index: usize, unit_index: usize) -> u8;
+    unsafe fn get_output_unchecked(&self, message_index: usize, unit_index: usize) -> u8;
+
+    fn get_output(&self, message_index: usize, unit_index: usize) -> u8 {
+        let input_messages = self.get_input_messages();
+        assert!(message_index < input_messages.len());
+        assert!(unit_index < input_messages[message_index].data.len());
+        // SAFETY: bounds verified in previous asserts
+        unsafe { self.get_output_unchecked(message_index, unit_index) }
+    }
 
     fn get_output_message(&self, message_index: usize) -> Message {
         let mut data = SmallVec::new();
         let msg = &self.get_input_messages()[message_index];
         for i in 0..msg.data.len() {
-            data.push(self.get_output(message_index, i));
+            // SAFETY: message_index is valid, otherwise the msg initialiser
+            //         would have panicked by now, and i is valid since we're
+            //         iterating over 0..msg.data.len()
+            data.push(unsafe { self.get_output_unchecked(message_index, i) });
         }
 
         Message { name: msg.name.clone(), data }

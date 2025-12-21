@@ -128,6 +128,8 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
 }
 
 fn eval_pt<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, m: usize, u: usize) -> u8 {
+    // TODO: add feature to hot-eval where you can provide an unsafe version and
+    //       verify bounds at the expression's compile-time
     codec_ctx.get_output(m, u)
 }
 
