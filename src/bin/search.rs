@@ -185,6 +185,9 @@ fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, m
         },
     };
 
+    // clone messages to keep them closer in memory with other working values
+    let messages = &(*messages).clone();
+
     worker_ctx.permute_keys_interruptible(&mut |key| {
         // TODO clearing the cache results in a 5% slowdown. hot-eval should
         //      support pure functions, so that it reuses outputs when possible,

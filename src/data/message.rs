@@ -21,6 +21,7 @@ impl Message {
 pub type MessageDataList = SmallVec<[MessageData; 9]>;
 pub type MessageList = SmallVec<[Message; 9]>;
 
+#[derive(Clone)]
 pub struct InterleavedMessageData {
     message_count: usize,
     // only need 1233 (9 * 137) for original messages, but can get 1239 for free
@@ -82,6 +83,7 @@ impl IndexMut<(usize, usize)> for InterleavedMessageData {
     }
 }
 
+#[derive(Clone)]
 pub struct AcceleratedMessageList {
     pub data: InterleavedMessageData,
     pub names: Vec<Box<str>>,
