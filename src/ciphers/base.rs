@@ -3,7 +3,7 @@ use std::error::Error;
 use rug::Integer;
 use smallvec::SmallVec;
 
-use crate::data::message::{Message, MessageList};
+use crate::data::message::{AcceleratedMessageList, Message, MessageList};
 
 #[derive(Debug)]
 pub enum StandardCipherError {
@@ -32,34 +32,38 @@ pub trait CipherKey: Sized + ToString {
 /// NOTE: use interior mutability if you need to cache results. For example, a
 ///       cipher that depends on previous values, like autokey ciphers
 pub trait CipherCodecContext<'codec, Key: CipherKey> {
-    fn new(input_messages: &'codec MessageList, key: &'codec Key) -> Self;
-    fn get_input_messages(&self) -> &MessageList;
+    fn new(input_messages: &'codec AcceleratedMessageList, key: &'codec Key) -> Self;
+    fn get_input_messages(&self) -> &AcceleratedMessageList;
     unsafe fn get_output_unchecked(&self, message_index: usize, unit_index: usize) -> u8;
 
     fn get_output(&self, message_index: usize, unit_index: usize) -> u8 {
-        let input_messages = self.get_input_messages();
-        assert!(message_index < input_messages.len());
-        assert!(unit_index < input_messages[message_index].data.len());
+        let data = &self.get_input_messages().data;
+        assert!(message_index < data.get_message_count());
+        // SAFETY: message_index bounds verified in previous assert
+        assert!(unit_index < unsafe { data.get_unit_count(message_index) });
         // SAFETY: bounds verified in previous asserts
         unsafe { self.get_output_unchecked(message_index, unit_index) }
     }
 
     fn get_output_message(&self, message_index: usize) -> Message {
+        let in_msgs = &self.get_input_messages();
+        assert!(message_index < in_msgs.data.get_message_count());
         let mut data = SmallVec::new();
-        let msg = &self.get_input_messages()[message_index];
-        for i in 0..msg.data.len() {
+        // SAFETY: message_index bounds verified in previous assert
+        for i in 0..unsafe { in_msgs.data.get_unit_count(message_index) } {
             // SAFETY: message_index is valid, otherwise the msg initialiser
             //         would have panicked by now, and i is valid since we're
             //         iterating over 0..msg.data.len()
             data.push(unsafe { self.get_output_unchecked(message_index, i) });
         }
 
-        Message { name: msg.name.clone(), data }
+        // SAFETY: message_index bounds verified in previous assert
+        Message { name: unsafe { in_msgs.names.get_unchecked(message_index) }.clone(), data }
     }
 
     fn get_output_messages(&self) -> MessageList {
         let mut messages = MessageList::default();
-        for m in 0..self.get_input_messages().len() {
+        for m in 0..self.get_input_messages().data.get_message_count() {
             messages.push(self.get_output_message(m));
         }
 

@@ -26,7 +26,7 @@ use std::num::NonZeroU32;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 use noita_eye_messages::utils::threading::get_parallelism;
-use noita_eye_messages::data::message::MessageList;
+use noita_eye_messages::data::message::AcceleratedMessageList;
 use noita_eye_messages::utils::print::{MessagesPrintConfig, format_big_float, format_big_uint, format_seconds_left, print_messages};
 
 #[cfg(not(target_env = "msvc"))]
@@ -140,7 +140,7 @@ fn eval_pt_freq_dist_error<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &
     }))
 }
 
-fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, messages: &MessageList, worker_ctx: T, cond_src: &'str str, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'str>> {
+fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, messages: &AcceleratedMessageList, worker_ctx: T, cond_src: &'str str, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'str>> {
     let mut jit_ctx = JITContext::new();
     let mut comp_ctx = jit_ctx.make_compilation_context()?;
     let mut pt_freq_dist = OnceCell::<UnitFrequency>::new();
@@ -244,7 +244,7 @@ fn main() { main_error_wrap!({
     };
 
     let (tx, rx) = sync_channel::<TaskPacket>(64);
-    let messages = messages_render_map.get_messages();
+    let messages = AcceleratedMessageList::from_messages(messages_render_map.get_messages());
 
     std::thread::scope(|scope| -> UnitResult {
         let mut keys_total = Integer::new();
