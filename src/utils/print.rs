@@ -61,6 +61,16 @@ pub fn format_seconds(mut secs: f64) -> String {
 
     let mut parts = Vec::<String>::new();
 
+    if secs >= 4.3488144e+17 { // age of universe
+        parts.push(format!("{} age of universe", (secs / 4.3488144e+17).floor()));
+        secs %= 4.3488144e+17;
+    }
+
+    if secs >= 31536000.0 { // years
+        parts.push(format!("{}y", (secs / 31536000.0).floor()));
+        secs %= 31536000.0;
+    }
+
     if secs >= 604800.0 { // weeks
         parts.push(format!("{}w", (secs / 604800.0).floor()));
         secs %= 604800.0;
