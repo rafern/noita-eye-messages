@@ -1,4 +1,4 @@
-use crate::data::message::MessageList;
+use crate::data::message::{MessageDataList, MessageList};
 
 use super::alphabet::MAX_UNITS;
 
@@ -16,6 +16,17 @@ impl UnitTotals {
         let mut counter = UnitTotals { data: [0; MAX_UNITS] };
         for message in messages.iter() {
             for c in message.data.iter() {
+                counter.data[*c as usize] += 1;
+            }
+        }
+
+        counter
+    }
+
+    pub fn from_message_data_list(message_data_list: &MessageDataList) -> UnitTotals {
+        let mut counter = UnitTotals { data: [0; MAX_UNITS] };
+        for data in message_data_list.iter() {
+            for c in data.iter() {
                 counter.data[*c as usize] += 1;
             }
         }

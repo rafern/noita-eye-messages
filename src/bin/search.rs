@@ -26,7 +26,7 @@ use std::num::NonZeroU32;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 use noita_eye_messages::utils::threading::get_parallelism;
-use noita_eye_messages::data::message::AcceleratedMessageList;
+use noita_eye_messages::data::message::{AcceleratedMessageList, InterleavedMessageData};
 use noita_eye_messages::utils::print::{MessagesPrintConfig, format_big_float, format_big_uint, format_seconds_left, print_messages};
 
 #[cfg(not(target_env = "msvc"))]
@@ -136,11 +136,11 @@ fn eval_pt<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionCon
 
 fn eval_pt_freq_dist_error<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, pt_freq_dist: &OnceCell<UnitFrequency>, languages: &Vec<UnitFrequency>, l: usize) -> f64 {
     languages[l].get_error(pt_freq_dist.get_or_init(|| {
-        UnitFrequency::from_messages(&codec_ctx.get_output_messages())
+        UnitFrequency::from_message_data_list(&codec_ctx.get_output_messages())
     }))
 }
 
-fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, messages: &AcceleratedMessageList, worker_ctx: T, cond_src: &'str str, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'str>> {
+fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, messages: &InterleavedMessageData, worker_ctx: T, cond_src: &'str str, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'str>> {
     let mut jit_ctx = JITContext::new();
     let mut comp_ctx = jit_ctx.make_compilation_context()?;
     let mut pt_freq_dist = OnceCell::<UnitFrequency>::new();
@@ -263,7 +263,7 @@ fn main() { main_error_wrap!({
         let mut worker_id = 0;
         for worker_ctx in worker_ctxs {
             let worker_id_clone = worker_id.clone();
-            let messages = &messages;
+            let messages = &messages.data;
             let cond_src = &args.condition;
             let languages = &languages;
             let tx = tx.clone();

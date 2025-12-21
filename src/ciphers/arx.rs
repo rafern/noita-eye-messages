@@ -3,7 +3,7 @@ use std::error::Error;
 use prost::Message;
 use rug::{Integer, ops::Pow};
 
-use crate::{ciphers::base::{Cipher, CipherCodecContext, CipherWorkerContext, StandardCipherError}, data::message::AcceleratedMessageList, utils::{run::AnyErrorResult, stackvec::StackVec, threading::get_worker_slice}};
+use crate::{ciphers::base::{Cipher, CipherCodecContext, CipherWorkerContext, StandardCipherError}, data::message::InterleavedMessageData, utils::{run::AnyErrorResult, stackvec::StackVec, threading::get_worker_slice}};
 
 use super::base::CipherKey;
 
@@ -116,21 +116,21 @@ impl CipherKey for ARXKey {
 
 pub struct ARXDecryptContext<'codec> {
     key: &'codec ARXKey,
-    input_messages: &'codec AcceleratedMessageList,
+    input_messages: &'codec InterleavedMessageData,
 }
 
 impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXDecryptContext<'codec> {
-    fn new(input_messages: &'codec AcceleratedMessageList, key: &'codec ARXKey) -> Self {
+    fn new(input_messages: &'codec InterleavedMessageData, key: &'codec ARXKey) -> Self {
         ARXDecryptContext { input_messages, key }
     }
 
-    fn get_input_messages(&self) -> &AcceleratedMessageList {
+    fn get_input_messages(&self) -> &InterleavedMessageData {
         self.input_messages
     }
 
     unsafe fn get_output_unchecked(&self, message_index: usize, unit_index: usize) -> u8 {
         // SAFETY: bounds must be verified by caller
-        let mut byte = unsafe { *self.input_messages.data.get_unchecked(message_index, unit_index) };
+        let mut byte = unsafe { *self.input_messages.get_unchecked(message_index, unit_index) };
 
         for round in self.key.rounds.iter().rev() {
             byte = (byte ^ round.xor).rotate_left(round.rot as u32).wrapping_sub(round.add);
@@ -142,21 +142,21 @@ impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXDecryptContext<'codec> {
 
 pub struct ARXEncryptContext<'codec> {
     key: &'codec ARXKey,
-    input_messages: &'codec AcceleratedMessageList,
+    input_messages: &'codec InterleavedMessageData,
 }
 
 impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXEncryptContext<'codec> {
-    fn new(input_messages: &'codec AcceleratedMessageList, key: &'codec ARXKey) -> Self {
+    fn new(input_messages: &'codec InterleavedMessageData, key: &'codec ARXKey) -> Self {
         ARXEncryptContext { input_messages, key }
     }
 
-    fn get_input_messages(&self) -> &AcceleratedMessageList {
+    fn get_input_messages(&self) -> &InterleavedMessageData {
         self.input_messages
     }
 
     unsafe fn get_output_unchecked(&self, message_index: usize, unit_index: usize) -> u8 {
         // SAFETY: bounds must be verified by caller
-        let mut byte = unsafe { *self.input_messages.data.get_unchecked(message_index, unit_index) };
+        let mut byte = unsafe { *self.input_messages.get_unchecked(message_index, unit_index) };
 
         for round in self.key.rounds.iter() {
             byte = byte.wrapping_add(round.add).rotate_right(round.rot as u32) ^ round.xor;
