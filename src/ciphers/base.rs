@@ -10,15 +10,17 @@ pub enum StandardCipherError {
     UnknownCipher,
     NotConfigurable,
     MissingConfiguration,
+    BadConfiguration { msg: Box<str> },
 }
 
 impl fmt::Display for StandardCipherError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", match self {
-            StandardCipherError::UnknownCipher => "Unknown cipher",
-            StandardCipherError::NotConfigurable => "This cipher is not configurable",
-            StandardCipherError::MissingConfiguration => "This cipher needs configuration",
-        })
+        match self {
+            StandardCipherError::UnknownCipher => write!(f, "Unknown cipher"),
+            StandardCipherError::NotConfigurable => write!(f, "This cipher is not configurable"),
+            StandardCipherError::MissingConfiguration => write!(f, "This cipher needs configuration"),
+            StandardCipherError::BadConfiguration { msg } => write!(f, "Bad cipher configuration: {}", msg),
+        }
     }
 }
 

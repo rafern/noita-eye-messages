@@ -15,6 +15,7 @@ use super::base::CipherKey;
  */
 
 const KEYS_PER_ROUND: u32 = 524288;
+const MAX_ROUNDS: usize = 8;
 
 macro_rules! permute_round {
     ($round:expr, $add_min:expr, $add_max:expr, $callback:block) => {
@@ -65,7 +66,7 @@ pub struct ARXRound {
 
 #[derive(Default)]
 pub struct ARXKey {
-    pub rounds: StackVec<ARXRound, 8>,
+    pub rounds: StackVec<ARXRound, MAX_ROUNDS>,
 }
 
 impl ToString for ARXKey {
@@ -246,7 +247,14 @@ pub struct ARXCipher {
 impl ARXCipher {
     pub fn new(config: Option<&str>) -> AnyErrorResult<ARXCipher> {
         match config {
-            Some(s) => Ok(ARXCipher { round_count: s.parse::<usize>()? }),
+            Some(s) => {
+                let round_count = s.parse::<usize>()?;
+                if round_count == 0 || round_count > MAX_ROUNDS {
+                    Err(StandardCipherError::BadConfiguration { msg: "Round count must be in the range 1..=8".into() }.into())
+                } else {
+                    Ok(ARXCipher { round_count })
+                }
+            },
             None => Err(StandardCipherError::MissingConfiguration.into()),
         }
     }
