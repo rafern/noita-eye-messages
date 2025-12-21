@@ -4,7 +4,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{analysis::alphabet::Alphabet, utils::run::{AnyErrorResult, UnitResult}};
 
-use super::{format_error::{InvalidFormatError, InvalidFormatErrorKind}, message::{Message, MessageList, MessageRenderMap, RenderMessage, RenderMessageBuilder}};
+use super::{format_error::{InvalidFormatError, InvalidFormatErrorKind}, message::{Message, MessageList}, render_message::{MessageRenderMap, RenderMessage, RenderMessageBuilder}};
 
 pub fn export_csv_messages(path: &std::path::PathBuf, messages: &MessageList) -> UnitResult {
     let mut file = std::fs::File::create(path)?;

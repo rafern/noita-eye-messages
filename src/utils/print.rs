@@ -1,4 +1,4 @@
-use crate::{analysis::alphabet::Alphabet, data::message::{Message, MessageRenderGroup, MessageRenderMap, RenderMessage}};
+use crate::{analysis::alphabet::Alphabet, data::{message::Message, render_message::{MessageRenderGroup, MessageRenderMap, RenderMessage}}};
 use colored::Colorize;
 use rug::Integer;
 

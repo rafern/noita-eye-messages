@@ -7,6 +7,7 @@ use noita_eye_messages::analysis::alphabet::Alphabet;
 use noita_eye_messages::data::alphabet_io::import_csv_alphabet_or_default;
 use noita_eye_messages::data::language_io::import_csv_languages;
 use noita_eye_messages::data::message_io::import_messages;
+use noita_eye_messages::data::render_message::MessageRenderMap;
 use noita_eye_messages::main_error_wrap;
 use noita_eye_messages::utils::run::UnitResult;
 use prost::Message;
@@ -25,7 +26,7 @@ use std::num::NonZeroU32;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 use noita_eye_messages::utils::threading::get_parallelism;
-use noita_eye_messages::data::message::{MessageList, MessageRenderMap};
+use noita_eye_messages::data::message::MessageList;
 use noita_eye_messages::utils::print::{MessagesPrintConfig, format_big_float, format_big_uint, format_seconds_left, print_messages};
 
 #[cfg(not(target_env = "msvc"))]
