@@ -75,5 +75,5 @@ pub fn get_worker_slice<T>(max_value: T, worker_id: u32, worker_total: u32) -> (
 }
 
 pub fn get_parallelism() -> u32 {
-    available_parallelism().unwrap_or(unsafe { std::num::NonZero::new_unchecked(1) }).get() as u32
+    available_parallelism().unwrap_or(std::num::NonZero::new(1).unwrap()).get() as u32
 }

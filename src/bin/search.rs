@@ -37,11 +37,11 @@ struct Args {
     /// Path to CSV or TXT file containing message data
     data_path: std::path::PathBuf,
     /// Condition to match. Values greater than 0 are treated as true, which should make it easy to use heuristics with thresholds as conditions (simply subtract the threshold value from the heuristic)
-    condition: String,
+    condition: Box<str>,
     /// Cipher to use
-    cipher: String,
+    cipher: Box<str>,
     /// Cipher configuration. Format is cipher-specific, but generally expected to be Rusty Object Notation. It's recommended to add this as the last argument after a "--"
-    config: Option<String>,
+    config: Option<Box<str>>,
     /// Disable parallelism (search messages using only the main thread). Equivalent to setting max parallelism to 1, but takes priority over max parallelism
     #[arg(short, long)]
     sequential: bool,
@@ -71,10 +71,10 @@ enum TaskPacket {
         //     messages like this, but the project is still in a weird
         //     transition state where it doesn't support distributed computing
         //     yet, but will
-        net_key: Vec<u8>,
+        net_key: Box<[u8]>,
     },
     Error {
-        message: String,
+        message: Box<str>,
     }
 }
 
@@ -102,7 +102,7 @@ const RECV_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn preamble(messages_render_map: &MessageRenderMap, alphabet: &Alphabet, worker_total: u32, keys_total: &Integer) {
     println!("Searching {} keys with {} workers", format_big_uint(keys_total), worker_total);
-    print_messages(String::from("Ciphertexts"), messages_render_map, alphabet, &MessagesPrintConfig::default());
+    print_messages("Ciphertexts", messages_render_map, alphabet, &MessagesPrintConfig::default());
     println!();
 }
 
@@ -127,17 +127,17 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
     }
 }
 
-fn eval_pt<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: *const T::DecryptionContext<'_>, m: usize, u: usize) -> u8 {
-    unsafe { &*codec_ctx }.get_output(m, u)
+fn eval_pt<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, m: usize, u: usize) -> u8 {
+    codec_ctx.get_output(m, u)
 }
 
-fn eval_pt_freq_dist_error<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: *const T::DecryptionContext<'_>, pt_freq_dist: *const OnceCell<UnitFrequency>, languages: *const Vec<UnitFrequency>, l: usize) -> f64 {
-    (unsafe { &*languages })[l].get_error(unsafe { &*pt_freq_dist }.get_or_init(|| {
-        UnitFrequency::from_messages(&unsafe { &*codec_ctx }.get_output_messages())
+fn eval_pt_freq_dist_error<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, pt_freq_dist: &OnceCell<UnitFrequency>, languages: &Vec<UnitFrequency>, l: usize) -> f64 {
+    languages[l].get_error(pt_freq_dist.get_or_init(|| {
+        UnitFrequency::from_messages(&codec_ctx.get_output_messages())
     }))
 }
 
-fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, messages: &MessageList, worker_ctx: T, cond_src: &'str String, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'str>> {
+fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, messages: &MessageList, worker_ctx: T, cond_src: &'str str, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'str>> {
     let mut jit_ctx = JITContext::new();
     let mut comp_ctx = jit_ctx.make_compilation_context()?;
     let mut pt_freq_dist = OnceCell::<UnitFrequency>::new();
@@ -170,8 +170,11 @@ fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, m
 
     let (mut slab, jit_fn) = match cond {
         CompiledExpression::Bool { mut slab, jit_fn } => {
-            slab.set_ptr_value(pt_freq_dist_hsi, &pt_freq_dist);
-            slab.set_ptr_value(languages_hsi, &languages);
+            // SAFETY: &pt_freq_dist has the same lifetime as slab
+            unsafe { slab.set_ptr_value(pt_freq_dist_hsi, &pt_freq_dist); }
+            // SAFETY: &languages outlives slab
+            unsafe { slab.set_ptr_value(languages_hsi, &languages); }
+
             (slab, jit_fn)
         },
         _ => {
@@ -188,8 +191,14 @@ fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, m
         pt_freq_dist.take(); // clear cache
 
         let codec_ctx = T::DecryptionContext::new(messages, key);
-        slab.set_ptr_value(codec_ctx_hsi, &codec_ctx);
+        // SAFETY: &codec_ctx is only used during expression evaluation, it's
+        //         replaced before every expression evaluation, and codec_ctx
+        //         outlives the call
+        unsafe { slab.set_ptr_value_unchecked(codec_ctx_hsi, &codec_ctx); }
 
+        // SAFETY: we're assuming that LLVM generated a valid function, that the
+        //         slab has valid data, and that hot-eval is not broken (no bad
+        //         codegen, sane types, etc...). not a very strong guarantee...
         if unsafe { jit_fn.call() } {
             tx.send(TaskPacket::Match { net_key: key.encode_to_buffer() }).unwrap();
         }
@@ -207,15 +216,15 @@ fn main() { main_error_wrap!({
     let languages = import_csv_languages(&args.language)?;
     let alphabet = import_csv_alphabet_or_default(&args.alphabet)?;
     let messages_render_map = import_messages(&args.data_path, &alphabet)?;
-    let cipher = deserialise_cipher(&args.cipher, &args.config)?;
+    let cipher = deserialise_cipher(&args.cipher, args.config.as_deref())?;
 
     let mut key_dump_file: Option<File> = match &args.key_dump_path {
         Some(path) => {
             let mut file = File::create_new(path)?;
             file.write(KeyDumpMeta {
                 build_hash: String::from(env!("GIT_HASH")),
-                cipher_name: args.cipher.clone(),
-                cipher_config: args.config.clone(),
+                cipher_name: args.cipher.clone().into(),
+                cipher_config: args.config.clone().map(|x| x.into_string()),
             }.encode_to_vec().as_slice())?;
 
             Some(file)
@@ -226,7 +235,7 @@ fn main() { main_error_wrap!({
     let worker_total = if args.sequential {
         1u32
     } else {
-        let mut max_parallelism: u32 = args.max_parallelism.unwrap_or(unsafe { NonZeroU32::new_unchecked(u32::MAX) }).into();
+        let mut max_parallelism: u32 = args.max_parallelism.unwrap_or(NonZeroU32::new(u32::MAX).unwrap()).into();
         max_parallelism = max_parallelism.min(cipher.get_max_parallelism());
         get_parallelism().min(max_parallelism)
     };
@@ -259,7 +268,7 @@ fn main() { main_error_wrap!({
             scope.spawn(move || {
                 match search_task(worker_id_clone, messages, worker_ctx, cond_src, languages, &tx) {
                     Ok(_) => tx.send(TaskPacket::Finished { worker_id }).unwrap(),
-                    Err(err) => tx.send(TaskPacket::Error { message: err.to_string() }).unwrap(),
+                    Err(err) => tx.send(TaskPacket::Error { message: err.to_string().into_boxed_str() }).unwrap(),
                 }
             });
 
@@ -287,10 +296,10 @@ fn main() { main_error_wrap!({
                         TaskPacket::Match { net_key } => {
                             match key_dump_file {
                                 Some(ref mut file) => {
-                                    file.write(net_key.as_slice())?;
+                                    file.write(net_key.iter().as_slice())?;
                                 },
                                 None => {
-                                    println!("Matched key {}", cipher.net_key_to_string(net_key)?);
+                                    println!("Matched key {}", cipher.net_key_to_boxed_str(&net_key)?);
                                 },
                             }
                         },

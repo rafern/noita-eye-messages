@@ -97,7 +97,7 @@ pub fn import_txt_messages(path: &std::path::PathBuf, alphabet: &Alphabet) -> An
                 message.data.push(unit);
                 render_msg_builder.push_unit(message.data.len() - 1);
             } else {
-                render_msg_builder.push_plaintext(String::from(grapheme));
+                render_msg_builder.push_plaintext(grapheme.into());
             }
         }
 

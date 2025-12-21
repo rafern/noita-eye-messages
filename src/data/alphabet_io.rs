@@ -28,7 +28,7 @@ pub fn import_csv_alphabet(path: &PathBuf) -> AnyErrorResult<Alphabet> {
                     }
                 },
                 None => {
-                    alphabet = Some(Alphabet::new(String::from(row_trim)));
+                    alphabet = Some(Alphabet::new(row_trim.into()));
                 },
             }
         }

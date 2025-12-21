@@ -67,7 +67,7 @@ pub fn get_default_figure_config() -> FigureConfig {
 }
 
 pub fn plot<T: Drawer + Hover + Send>(task_list: &mut AsyncTaskList, mut plot: T, title: &str, target_width: u32, target_height: u32) {
-    let title_copy = String::from(title);
+    let title_copy = Box::<str>::from(title);
 
     task_list.add_async_or_sync(move || {
         let width = target_width + MARGIN * 2;
@@ -167,7 +167,7 @@ pub fn freq_bar_chart(task_list: &mut AsyncTaskList, title: &str, x_label: &str,
             f as f64 / f_total as f64
         };
 
-        let mut dataset = BarDataset::new(freq.name.as_str(), hsv_to_rgb(hue, HSV_SAT, HSV_VAL));
+        let mut dataset = BarDataset::new(&freq.name, hsv_to_rgb(hue, HSV_SAT, HSV_VAL));
 
         for i in 0..freq.data.len() {
             let v = freq.data[i];

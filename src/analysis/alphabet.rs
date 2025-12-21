@@ -28,7 +28,7 @@ impl fmt::Display for AlphabetError {
 impl Error for AlphabetError {}
 
 pub struct AlphabetUnit {
-    pub grapheme: String,
+    pub grapheme: Box<str>,
     pub weight: f64,
 }
 
@@ -39,13 +39,13 @@ impl AlphabetUnit {
 }
 
 pub struct Alphabet {
-    name: String,
+    name: Box<str>,
     units: BTreeMap<u8, AlphabetUnit>,
-    grapheme_map: HashMap<String, u8>,
+    grapheme_map: HashMap<Box<str>, u8>,
 }
 
 impl Alphabet {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: Box<str>) -> Self {
         Self { name, units: BTreeMap::new(), grapheme_map: HashMap::new() }
     }
 
@@ -57,11 +57,11 @@ impl Alphabet {
         self.units.iter()
     }
 
-    pub fn get_name(&self) -> &String {
+    pub fn get_name(&self) -> &Box<str> {
         &self.name
     }
 
-    pub fn add_unit(&mut self, unit: u8, grapheme: String, weight: f64) -> Result<(), AlphabetError> {
+    pub fn add_unit(&mut self, unit: u8, grapheme: Box<str>, weight: f64) -> Result<(), AlphabetError> {
         if self.len() >= MAX_UNITS {
             Err(AlphabetError::UnitLimitExceeded)
         } else if grapheme.graphemes(true).count() != 1 {
@@ -83,7 +83,7 @@ impl Alphabet {
         } else if self.units.contains_key(&unit) {
             Err(AlphabetError::DuplicateUnit)
         } else {
-            self.units.insert(unit, AlphabetUnit { grapheme: String::new(), weight });
+            self.units.insert(unit, AlphabetUnit { grapheme: "".into(), weight });
             Ok(())
         }
     }
@@ -92,7 +92,7 @@ impl Alphabet {
         self.units.get(&idx)
     }
 
-    pub fn get_unit_idx(&self, grapheme: &String) -> Option<u8> {
+    pub fn get_unit_idx(&self, grapheme: &Box<str>) -> Option<u8> {
         self.grapheme_map.get(grapheme).copied()
     }
 
@@ -113,7 +113,7 @@ impl Alphabet {
 
 impl Default for Alphabet {
     fn default() -> Self {
-        let mut alphabet = Alphabet::new(String::from("ASCII"));
+        let mut alphabet = Alphabet::new("ASCII".into());
 
         for u in 0x00..=0x1fu8 {
             alphabet.add_anonymous_unit(u, 0.0).expect("expected default alphabet to never fail creation");
@@ -122,7 +122,7 @@ impl Default for Alphabet {
         for u in 0x20..=0x7eu8 {
             alphabet.add_unit(
                 u,
-                String::from(unsafe { std::char::from_u32_unchecked(u as u32) }),
+                str::from_utf8(&[u]).expect("expected default alphabet to never fail creation").into(),
                 0.0
             ).expect("expected default alphabet to never fail creation");
         }

@@ -9,14 +9,14 @@ use super::{alphabet::{Alphabet, MAX_UNITS}, unit_totals::UnitTotals};
  */
 #[derive(Clone)]
 pub struct UnitFrequency {
-    pub name: String,
+    pub name: Box<str>,
     pub data: [f64; MAX_UNITS],
 }
 
 impl Default for UnitFrequency {
     fn default() -> Self {
         UnitFrequency {
-            name: String::new(),
+            name: "".into(),
             data: [0.0; MAX_UNITS],
         }
     }
@@ -53,7 +53,7 @@ impl UnitFrequency {
             total += i;
         }
 
-        let mut freq = UnitFrequency { name: String::new(), data: [0f64; MAX_UNITS] };
+        let mut freq = UnitFrequency { name: "".into(), data: [0f64; MAX_UNITS] };
         for i in 0..MAX_UNITS {
             freq.data[i] = totals.data[i] as f64 / total as f64;
         }
@@ -64,7 +64,7 @@ impl UnitFrequency {
 
     pub fn from_unit_totals_with_name(name: &str, totals: &UnitTotals) -> UnitFrequency {
         let mut x = UnitFrequency::from_unit_totals(totals);
-        x.name = String::from(name);
+        x.name = name.into();
         x
     }
 

@@ -24,7 +24,7 @@ fn main() { main_error_wrap!({
     let alphabet = import_csv_alphabet_or_default(&args.alphabet)?;
     let messages_render_map = import_messages(&args.data_path, &alphabet)?;
 
-    print_messages(String::from("Input"), &messages_render_map, &alphabet, &MessagesPrintConfig::default());
+    print_messages("Input", &messages_render_map, &alphabet, &MessagesPrintConfig::default());
     println!();
 
     let unit_totals = UnitTotals::from_messages(messages_render_map.get_messages());

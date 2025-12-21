@@ -86,7 +86,7 @@ impl ToString for ARXKey {
 }
 
 impl CipherKey for ARXKey {
-    fn encode_to_buffer(&self) -> Vec<u8> {
+    fn encode_to_buffer(&self) -> Box<[u8]> {
         let mut enc_key = EncodedARXKey::default();
         for round in self.rounds.iter() {
             enc_key.rounds.push(EncodedARXRound {
@@ -96,11 +96,11 @@ impl CipherKey for ARXKey {
             });
         }
 
-        enc_key.encode_to_vec()
+        enc_key.encode_to_vec().into()
     }
 
-    fn from_buffer(buffer: &Vec<u8>) -> Result<Self, Box<dyn Error>> {
-        let enc_key = EncodedARXKey::decode(buffer.as_slice())?;
+    fn from_buffer(buffer: &Box<[u8]>) -> Result<Self, Box<dyn Error>> {
+        let enc_key = EncodedARXKey::decode(buffer.iter().as_slice())?;
         let mut key = ARXKey::default();
         for enc_round in enc_key.rounds {
             key.rounds.push(ARXRound {
@@ -227,6 +227,9 @@ impl CipherWorkerContext<ARXKey> for ARXWorkerContext {
             chunk_callback(&mut key, (self.a_max as u32 - self.a_min as u32 + 1) * 256 * 8);
         } else {
             permute_round!(key.rounds[0], self.a_min, self.a_max, {
+                // SAFETY: round_count must be at least 2 to reach this block,
+                //         so 1 is guaranteed to be <= r_max, as r_max is
+                //         round_count - 1, which is 2 - 1 = 1 at minimum
                 if !unsafe { self.permute_additional_round(1, round_count - 1, &mut key, key_callback, chunk_callback) } { return }
             });
         }
@@ -239,7 +242,7 @@ pub struct ARXCipher {
 }
 
 impl ARXCipher {
-    pub fn new(config: &Option<String>) -> AnyErrorResult<ARXCipher> {
+    pub fn new(config: Option<&str>) -> AnyErrorResult<ARXCipher> {
         match config {
             Some(s) => Ok(ARXCipher { round_count: s.parse::<usize>()? }),
             None => Err(StandardCipherError::MissingConfiguration.into()),

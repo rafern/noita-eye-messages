@@ -191,7 +191,7 @@ pub fn print_message(msg: &Message, render_message: &RenderMessage, alphabet: &A
     println!();
 }
 
-pub fn print_messages(title: String, message_render_map: &MessageRenderMap, alphabet: &Alphabet, config: &MessagesPrintConfig) {
+pub fn print_messages(title: &str, message_render_map: &MessageRenderMap, alphabet: &Alphabet, config: &MessagesPrintConfig) {
     let min_unit_alphabet = alphabet.get_unit_min();
     let mut min_unprintable_unit: Option<u8> = None;
     let messages = message_render_map.get_messages();

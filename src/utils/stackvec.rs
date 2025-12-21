@@ -40,11 +40,15 @@ impl<T, const MAX_LEN: usize> StackVec<T, MAX_LEN> {
 
     #[inline(always)]
     pub unsafe fn get_unchecked(&self, idx: usize) -> &T {
+        // SAFETY: caller must guarantee that idx < self.len. if done, then
+        //         data[idx] is guaranteed to be initialised
         unsafe { self.data.get_unchecked(idx).assume_init_ref() }
     }
 
     #[inline(always)]
     pub unsafe fn get_unchecked_mut(&mut self, idx: usize) -> &mut T {
+        // SAFETY: caller must guarantee that idx < self.len. if done, then
+        //         data[idx] is guaranteed to be initialised
         unsafe { self.data.get_unchecked_mut(idx).assume_init_mut() }
     }
 

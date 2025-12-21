@@ -32,11 +32,11 @@ fn main() { main_error_wrap!({
     }
 
     let out_dir = out_data_path.parent().unwrap();
-    let (file_name_prefix, file_extension): (String, String) = {
-        let file_name = String::from(out_data_path.file_name().unwrap().to_str().unwrap());
+    let (file_name_prefix, file_extension) = {
+        let file_name = out_data_path.file_name().unwrap().to_str().unwrap();
         match file_name.rfind('.') {
-            Some(idx) if idx > 0 => (String::from(&file_name[..idx]), String::from(&file_name[idx..])),
-            _ => (file_name, String::new())
+            Some(idx) if idx > 0 => (&file_name[..idx], &file_name[idx..]),
+            _ => (file_name, "")
         }
     };
 

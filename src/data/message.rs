@@ -15,15 +15,15 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn from_name(name: String) -> Self {
-        Self { name: name.into_boxed_str(), data: SmallVec::new() }
+    pub fn from_name(name: Box<str>) -> Self {
+        Self { name, data: SmallVec::new() }
     }
 }
 
 pub type MessageList = StackVec<Message, 9>;
 
 pub enum MessageRenderGroup {
-    Plaintext { grapheme: String },
+    Plaintext { grapheme: Box<str> },
     HexUnit { unit: u8 },
     CiphertextRange { from: usize, to: usize },
 }
@@ -104,7 +104,7 @@ impl RenderMessageBuilder {
         self.render_groups.push(MessageRenderGroup::HexUnit { unit });
     }
 
-    pub fn push_plaintext(&mut self, grapheme: String) {
+    pub fn push_plaintext(&mut self, grapheme: Box<str>) {
         if grapheme.len() == 1 && grapheme.is_ascii() {
             let ascii = grapheme.as_bytes()[0];
             if ascii <= 0x1f || ascii == 0x7f {
