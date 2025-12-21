@@ -1,7 +1,5 @@
 use smallvec::SmallVec;
 
-use crate::utils::stackvec::StackVec;
-
 // TODO separate metadata (name) from data, and interleave messages so that
 //      indices from different messages are near each other, which should
 //      provide a substancial speed-up due to better cache locality
@@ -20,7 +18,7 @@ impl Message {
     }
 }
 
-pub type MessageList = StackVec<Message, 9>;
+pub type MessageList = SmallVec<[Message; 9]>;
 
 pub enum MessageRenderGroup {
     Plaintext { grapheme: Box<str> },
