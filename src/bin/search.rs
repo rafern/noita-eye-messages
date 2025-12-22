@@ -1,6 +1,7 @@
 use hot_eval::codegen::compiled_expression::CompiledExpression;
 use hot_eval::codegen::jit_context::JITContext;
-use hot_eval::common::binding::BindingFunctionParameter;
+use hot_eval::common::binding::{Binding, FnPointer, FnSpecCallArg, FnSpecChoice};
+use hot_eval::common::ir_const::IRConst;
 use hot_eval::common::table::Table;
 use hot_eval::common::value_type::ValueType;
 use noita_eye_messages::analysis::alphabet::Alphabet;
@@ -129,15 +130,22 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
 }
 
 fn eval_pt<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, m: usize, u: usize) -> u8 {
-    // TODO: add feature to hot-eval where you can provide an unsafe version and
-    //       verify bounds at the expression's compile-time
     codec_ctx.get_output(m, u)
 }
 
-fn eval_pt_freq_dist_error<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, pt_freq_dist: &OnceCell<UnitFrequency>, languages: &Vec<UnitFrequency>, l: usize) -> f64 {
-    languages[l].get_error(pt_freq_dist.get_or_init(|| {
+unsafe fn eval_pt_unchecked<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, m: usize, u: usize) -> u8 {
+    // SAFETY: caller must verify bounds
+    unsafe { codec_ctx.get_output_unchecked(m, u) }
+}
+
+fn eval_pt_freq_dist_error_specific<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, pt_freq_dist: &OnceCell<UnitFrequency>, language: &UnitFrequency) -> f64 {
+    language.get_error(pt_freq_dist.get_or_init(|| {
         UnitFrequency::from_message_data_list(&codec_ctx.get_output_messages())
     }))
+}
+
+fn eval_pt_freq_dist_error<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, pt_freq_dist: &OnceCell<UnitFrequency>, languages: &Vec<UnitFrequency>, l: usize) -> f64 {
+    eval_pt_freq_dist_error_specific::<K, T>(codec_ctx, pt_freq_dist, &languages[l])
 }
 
 fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, messages: &InterleavedMessageData, worker_ctx: T, cond_src: &'str str, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'str>> {
@@ -145,44 +153,92 @@ fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, m
     let mut comp_ctx = jit_ctx.make_compilation_context()?;
     let mut pt_freq_dist = OnceCell::<UnitFrequency>::new();
     let mut cond_table = Table::new();
+    let pt_freq_dist_ptr = &pt_freq_dist as *const OnceCell<UnitFrequency>;
+    let languages_ptr = languages as *const Vec<UnitFrequency>;
     let codec_ctx_hsi = cond_table.add_hidden_state(ValueType::USize);
-    let pt_freq_dist_hsi = cond_table.add_hidden_state(ValueType::USize);
-    let languages_hsi = cond_table.add_hidden_state(ValueType::USize);
 
-    cond_table.add_function_3_map("pt".into(), eval_pt::<K, T>,
-        // codec_ctx: &T::DecryptionContext
-        BindingFunctionParameter::from_hidden_state(codec_ctx_hsi),
-        // m: usize
-        ValueType::USize,
-        // u: usize
-        ValueType::USize,
-    )?;
+    // SAFETY: specialization closure only returns an unchecked function's
+    //         pointer if it can prove the inputs are always in-bounds, and has
+    //         correctly mapped parameters
+    unsafe { cond_table.add_binding("pt".into(), Binding::Function {
+        ret_type: ValueType::U8,
+        params: [
+            // param 0: usize
+            ValueType::USize,
+            // param 1: usize
+            ValueType::USize,
+        ].into(),
+        fn_spec: Box::new(move |hints| {
+            let args = [
+                // codec_ctx: &T::DecryptionContext
+                FnSpecCallArg::from_hidden_state(codec_ctx_hsi),
+                // m: usize (param 0)
+                FnSpecCallArg::MappedArgument { param_idx: 0 },
+                // u: usize (param 1)
+                FnSpecCallArg::MappedArgument { param_idx: 1 },
+            ].into();
 
-    cond_table.add_function_4_map("pt_freq_dist_error".into(), eval_pt_freq_dist_error::<K, T>,
-        // codec_ctx: &T::DecryptionContext
-        BindingFunctionParameter::from_hidden_state(codec_ctx_hsi),
-        // pt_freq_dist: &OnceCell<UnitFrequency>
-        BindingFunctionParameter::from_hidden_state(pt_freq_dist_hsi),
-        // languages: &Vec<UnitFrequency>
-        BindingFunctionParameter::from_hidden_state(languages_hsi),
-        // l: usize
-        ValueType::USize
-    )?;
+            if let [Some(IRConst::Uint { inner: m }), Some(IRConst::Uint { inner: u })] = *hints.consts {
+                let m = m as usize;
+                if m < messages.get_message_count() && (u as usize) < messages.get_unit_count(m) {
+                    Ok(FnSpecChoice::Call { fn_ptr: eval_pt_unchecked::<K, T> as FnPointer, args })
+                } else {
+                    Err("pt() call in expression is always out of bounds".into())
+                }
+            } else {
+                Ok(FnSpecChoice::Call { fn_ptr: eval_pt::<K, T> as FnPointer, args })
+            }
+        }),
+    })? };
 
-    let cond = comp_ctx.compile_str(&cond_src, &cond_table)?;
+    // SAFETY: specialization closure only returns an unchecked function's
+    //         pointer if it can prove the inputs are always in-bounds, and has
+    //         correctly mapped parameters
+    unsafe { cond_table.add_binding("pt_freq_dist_error".into(), Binding::Function {
+        ret_type: ValueType::F64,
+        params: [
+            // param 0: usize
+            ValueType::USize,
+        ].into(),
+        fn_spec: Box::new(move |hints| {
+            if let [Some(IRConst::Uint { inner: l })] = *hints.consts {
+                let l = l as usize;
+                if l < languages.len() {
+                    Ok(FnSpecChoice::Call {
+                        fn_ptr: eval_pt_freq_dist_error_specific::<K, T> as FnPointer,
+                        args: [
+                            // codec_ctx: &T::DecryptionContext
+                            FnSpecCallArg::from_hidden_state(codec_ctx_hsi),
+                            // pt_freq_dist: &OnceCell<UnitFrequency>
+                            FnSpecCallArg::from(pt_freq_dist_ptr.addr()),
+                            // language: &UnitFrequency
+                            FnSpecCallArg::from((&languages[l] as *const UnitFrequency).addr()),
+                        ].into(),
+                    })
+                } else {
+                    Err("pt_freq_dist_error() call in expression is always out of bounds".into())
+                }
+            } else {
+                Ok(FnSpecChoice::Call {
+                    fn_ptr: eval_pt_freq_dist_error::<K, T> as FnPointer,
+                    args: [
+                        // codec_ctx: &T::DecryptionContext
+                        FnSpecCallArg::from_hidden_state(codec_ctx_hsi),
+                        // pt_freq_dist: &OnceCell<UnitFrequency>
+                        FnSpecCallArg::from(pt_freq_dist_ptr.addr()),
+                        // languages: &Vec<UnitFrequency>
+                        FnSpecCallArg::from(languages_ptr.addr()),
+                        // l: usize (param 0)
+                        FnSpecCallArg::MappedArgument { param_idx: 0 },
+                    ].into(),
+                })
+            }
+        }),
+    })? };
 
-    let (mut slab, jit_fn) = match cond {
-        CompiledExpression::Bool { mut slab, jit_fn } => {
-            // SAFETY: &pt_freq_dist has the same lifetime as slab
-            unsafe { slab.set_ptr_value(pt_freq_dist_hsi, &pt_freq_dist); }
-            // SAFETY: &languages outlives slab
-            unsafe { slab.set_ptr_value(languages_hsi, &languages); }
-
-            (slab, jit_fn)
-        },
-        _ => {
-            return Err(PredicateError::BadExpressionType.into());
-        },
+    let (mut slab, jit_fn) = match comp_ctx.compile_str(&cond_src, &cond_table)? {
+        CompiledExpression::Bool { slab, jit_fn } => (slab, jit_fn),
+        _ => return Err(PredicateError::BadExpressionType.into()),
     };
 
     // clone messages to keep them closer in memory with other working values
