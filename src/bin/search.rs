@@ -3,6 +3,7 @@ use hot_eval::codegen::jit_context::JITContext;
 use hot_eval::common::binding::{Binding, FnPointer, FnSpecCallArg, FnSpecChoice};
 use hot_eval::common::ir_const::IRConst;
 use hot_eval::common::table::Table;
+use hot_eval::common::value::Value;
 use hot_eval::common::value_type::ValueType;
 use noita_eye_messages::analysis::alphabet::Alphabet;
 use noita_eye_messages::data::alphabet_io::import_csv_alphabet_or_default;
@@ -133,6 +134,14 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
     }
 }
 
+fn eval_in(messages: &InterleavedMessageData, m: usize, u: usize) -> u8 {
+    messages[(m, u)]
+}
+
+fn eval_in_freq_dist_error(in_freq_dist_errors: &Box<[f64]>, l: usize) -> f64 {
+    in_freq_dist_errors[l]
+}
+
 fn eval_out<const DECRYPT: bool, K, W>(codec_ctx: &W::CodecContext<'_, DECRYPT>, m: usize, u: usize) -> u8
 where
     K: CipherKey,
@@ -181,9 +190,81 @@ where
     let languages_ptr = languages as *const Vec<UnitFrequency>;
     let codec_ctx_hsi = cond_table.add_hidden_state(ValueType::USize);
 
-    // SAFETY: specialization closure only returns an unchecked function's
-    //         pointer if it can prove the inputs are always in-bounds, and has
+    let in_freq_dist_errors: Box<[f64]> = {
+        let mut errors = Vec::<f64>::new();
+        for language in languages {
+            errors.push(language.get_error(
+                &UnitFrequency::from_interleaved_message_data(messages)
+            ));
+        }
+
+        errors.into()
+    };
+
+    // SAFETY: all specialization closures only return an unchecked function's
+    //         pointer if it can prove the inputs are always in-bounds, and have
     //         correctly mapped parameters
+
+    unsafe { cond_table.add_binding("in".into(), Binding::Function {
+        ret_type: ValueType::U8,
+        params: [
+            // param 0: usize
+            ValueType::USize,
+            // param 1: usize
+            ValueType::USize,
+        ].into(),
+        fn_spec: Box::new(move |hints| {
+            let args = [
+                // messages: &InterleavedMessageData
+                FnSpecCallArg::from((messages as *const InterleavedMessageData).addr()),
+                // m: usize (param 0)
+                FnSpecCallArg::MappedArgument { param_idx: 0 },
+                // u: usize (param 1)
+                FnSpecCallArg::MappedArgument { param_idx: 1 },
+            ].into();
+
+            if let [Some(IRConst::Uint { inner: m }), Some(IRConst::Uint { inner: u })] = *hints.consts {
+                let m = m as usize;
+                let u = u as usize;
+                if m < messages.get_message_count() && u < messages.get_unit_count(m) {
+                    Ok(FnSpecChoice::Const { value: Value::U8 { inner: messages[(m, u)] } })
+                } else {
+                    Err("in() call in expression is always out of bounds".into())
+                }
+            } else {
+                Ok(FnSpecChoice::Call { fn_ptr: eval_in as FnPointer, args })
+            }
+        }),
+    })? };
+
+    unsafe { cond_table.add_binding("in_freq_dist_error".into(), Binding::Function {
+        ret_type: ValueType::F64,
+        params: [
+            // param 0: usize
+            ValueType::USize,
+        ].into(),
+        fn_spec: Box::new(move |hints| {
+            if let [Some(IRConst::Uint { inner: l })] = *hints.consts {
+                let l = l as usize;
+                if l < languages.len() {
+                    Ok(FnSpecChoice::Const { value: Value::F64 { inner: in_freq_dist_errors[l] } })
+                } else {
+                    Err("in_freq_dist_error() call in expression is always out of bounds".into())
+                }
+            } else {
+                Ok(FnSpecChoice::Call {
+                    fn_ptr: eval_in_freq_dist_error as FnPointer,
+                    args: [
+                        // in_freq_dist_errors: &Box<[f64]>
+                        FnSpecCallArg::from((&in_freq_dist_errors as *const Box<[f64]>).addr()),
+                        // l: usize (param 0)
+                        FnSpecCallArg::MappedArgument { param_idx: 0 },
+                    ].into(),
+                })
+            }
+        }),
+    })? };
+
     unsafe { cond_table.add_binding("out".into(), Binding::Function {
         ret_type: ValueType::U8,
         params: [
@@ -215,9 +296,6 @@ where
         }),
     })? };
 
-    // SAFETY: specialization closure only returns an unchecked function's
-    //         pointer if it can prove the inputs are always in-bounds, and has
-    //         correctly mapped parameters
     unsafe { cond_table.add_binding("out_freq_dist_error".into(), Binding::Function {
         ret_type: ValueType::F64,
         params: [

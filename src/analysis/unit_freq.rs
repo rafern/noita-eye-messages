@@ -1,4 +1,4 @@
-use crate::data::message::{MessageDataList, MessageList};
+use crate::data::message::{InterleavedMessageData, MessageDataList, MessageList};
 
 use super::{alphabet::{Alphabet, MAX_UNITS}, unit_totals::UnitTotals};
 
@@ -72,8 +72,12 @@ impl UnitFrequency {
         UnitFrequency::from_unit_totals(&UnitTotals::from_messages(messages))
     }
 
-    pub fn from_message_data_list(messages: &MessageDataList) -> UnitFrequency {
-        UnitFrequency::from_unit_totals(&UnitTotals::from_message_data_list(messages))
+    pub fn from_message_data_list(message_data_list: &MessageDataList) -> UnitFrequency {
+        UnitFrequency::from_unit_totals(&UnitTotals::from_message_data_list(message_data_list))
+    }
+
+    pub fn from_interleaved_message_data(interleaved_message_data: &InterleavedMessageData) -> UnitFrequency {
+        UnitFrequency::from_unit_totals(&UnitTotals::from_interleaved_message_data(interleaved_message_data))
     }
 
     pub fn get_error(&self, other: &UnitFrequency) -> f64 {
