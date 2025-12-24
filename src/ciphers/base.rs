@@ -31,9 +31,14 @@ pub trait CipherKey: Sized + ToString {
     fn from_buffer(buffer: &Box<[u8]>) -> Result<Self, Box<dyn Error>>;
 }
 
+// FIXME: the DECRYPT const generic is a bad solution. ideally this trait would
+//        not know what it's used for, and the decrypt/encrypt concrete types
+//        would be set via an associated type of the CipherWorkerContext, but
+//        this is complicated heavily by the fact that CipherCodecContext has a
+//        lifetime, and i can't figure out how to pass it to a closure
 /// NOTE: use interior mutability if you need to cache results. For example, a
 ///       cipher that depends on previous values, like autokey ciphers
-pub trait CipherCodecContext<'codec, Key: CipherKey> {
+pub trait CipherCodecContext<'codec, const DECRYPT: bool, Key: CipherKey> {
     fn new(input_messages: &'codec InterleavedMessageData, key: &'codec Key) -> Self;
     fn get_input_messages(&self) -> &InterleavedMessageData;
     unsafe fn get_output_unchecked(&self, message_index: usize, unit_index: usize) -> u8;
@@ -73,18 +78,17 @@ pub trait CipherCodecContext<'codec, Key: CipherKey> {
 }
 
 pub trait CipherWorkerContext<Key: CipherKey>: Send {
-    type DecryptionContext<'codec>: CipherCodecContext<'codec, Key>;
-    type EncryptionContext<'codec>: CipherCodecContext<'codec, Key>;
+    type CodecContext<'codec, const DECRYPT: bool>: CipherCodecContext<'codec, DECRYPT, Key>;
 
     fn get_total_keys(&self) -> Integer;
     /**
      * key_callback must be called for each key
      * chunk_callback must be called at least every u32::MAX keys
      */
-    fn permute_keys_interruptible<KC: FnMut(&Key), CC: FnMut(&Key, u32) -> bool>(&self, key_callback: &mut KC, chunk_callback: &mut CC);
+    fn permute_keys_interruptible<KC: FnMut(&Key), CC: FnMut(u32) -> bool>(&self, key_callback: KC, chunk_callback: CC);
 
-    fn permute_keys<KC: FnMut(&Key)>(&self, key_callback: &mut KC) {
-        self.permute_keys_interruptible(key_callback, &mut |_, _| { true });
+    fn permute_keys<KC: FnMut(&Key)>(&self, key_callback: KC) {
+        self.permute_keys_interruptible(key_callback, |_| { true });
     }
 }
 

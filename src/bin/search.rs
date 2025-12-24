@@ -44,6 +44,9 @@ struct Args {
     cipher: Box<str>,
     /// Cipher configuration. Format is cipher-specific, but generally expected to be Rusty Object Notation. It's recommended to add this as the last argument after a "--"
     config: Option<Box<str>>,
+    /// Encrypt input message instead of decrypting (disabled by default)
+    #[arg(short, long)]
+    encrypt: bool,
     /// Disable parallelism (search messages using only the main thread). Equivalent to setting max parallelism to 1, but takes priority over max parallelism
     #[arg(short, long)]
     sequential: bool,
@@ -102,9 +105,10 @@ const RECV_TIMEOUT: Duration = Duration::from_secs(1);
 // TODO bin to decrypt with individual key
 // TODO bin to refine a search via key dump files
 
-fn preamble(messages_render_map: &MessageRenderMap, alphabet: &Alphabet, worker_total: u32, keys_total: &Integer) {
+fn preamble(messages_render_map: &MessageRenderMap, alphabet: &Alphabet, worker_total: u32, keys_total: &Integer, decrypt: bool) {
     println!("Searching {} keys with {} workers", format_big_uint(keys_total), worker_total);
-    print_messages("Ciphertexts", messages_render_map, alphabet, &MessagesPrintConfig::default());
+    let title = if decrypt { "Ciphertexts" } else { "Plaintexts" };
+    print_messages(title, messages_render_map, alphabet, &MessagesPrintConfig::default());
     println!();
 }
 
@@ -129,38 +133,58 @@ fn print_progress(time_range: Option<(&Instant, &Instant)>, secs_since_last: f64
     }
 }
 
-fn eval_pt<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, m: usize, u: usize) -> u8 {
+fn eval_out<const DECRYPT: bool, K, W>(codec_ctx: &W::CodecContext<'_, DECRYPT>, m: usize, u: usize) -> u8
+where
+    K: CipherKey,
+    W: CipherWorkerContext<K>,
+{
     codec_ctx.get_output(m, u)
 }
 
-unsafe fn eval_pt_unchecked<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, m: usize, u: usize) -> u8 {
+unsafe fn eval_out_unchecked<const DECRYPT: bool, K, W>(codec_ctx: &W::CodecContext<'_, DECRYPT>, m: usize, u: usize) -> u8
+where
+    K: CipherKey,
+    W: CipherWorkerContext<K>,
+{
     // SAFETY: caller must verify bounds
     unsafe { codec_ctx.get_output_unchecked(m, u) }
 }
 
-fn eval_pt_freq_dist_error_specific<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, pt_freq_dist: &OnceCell<UnitFrequency>, language: &UnitFrequency) -> f64 {
-    language.get_error(pt_freq_dist.get_or_init(|| {
+fn eval_out_freq_dist_error_specific<const DECRYPT: bool, K, W>(codec_ctx: &W::CodecContext<'_, DECRYPT>, out_freq_dist: &OnceCell<UnitFrequency>, language: &UnitFrequency) -> f64
+where
+    K: CipherKey,
+    W: CipherWorkerContext<K>,
+{
+    language.get_error(out_freq_dist.get_or_init(|| {
         UnitFrequency::from_message_data_list(&codec_ctx.get_output_messages())
     }))
 }
 
-fn eval_pt_freq_dist_error<K: CipherKey, T: CipherWorkerContext<K>>(codec_ctx: &T::DecryptionContext<'_>, pt_freq_dist: &OnceCell<UnitFrequency>, languages: &Vec<UnitFrequency>, l: usize) -> f64 {
-    eval_pt_freq_dist_error_specific::<K, T>(codec_ctx, pt_freq_dist, &languages[l])
+fn eval_out_freq_dist_error<const DECRYPT: bool, K, W>(codec_ctx: &W::CodecContext<'_, DECRYPT>, out_freq_dist: &OnceCell<UnitFrequency>, languages: &Vec<UnitFrequency>, l: usize) -> f64
+where
+    K: CipherKey,
+    W: CipherWorkerContext<K>,
+{
+    eval_out_freq_dist_error_specific::<DECRYPT, K, W>(codec_ctx, out_freq_dist, &languages[l])
 }
 
-fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, messages: &InterleavedMessageData, worker_ctx: T, cond_src: &'str str, languages: &Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'str>> {
+fn search_task<'inputs, 'src, const DECRYPT: bool, K, W>(_worker_id: u32, messages: &'inputs InterleavedMessageData, worker_ctx: W, cond_src: &'src str, languages: &'inputs Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'src>>
+where
+    K: CipherKey,
+    W: CipherWorkerContext<K>,
+{
     let mut jit_ctx = JITContext::new();
     let mut comp_ctx = jit_ctx.make_compilation_context()?;
-    let mut pt_freq_dist = OnceCell::<UnitFrequency>::new();
+    let mut out_freq_dist = OnceCell::<UnitFrequency>::new();
     let mut cond_table = Table::new();
-    let pt_freq_dist_ptr = &pt_freq_dist as *const OnceCell<UnitFrequency>;
+    let out_freq_dist_ptr = &out_freq_dist as *const OnceCell<UnitFrequency>;
     let languages_ptr = languages as *const Vec<UnitFrequency>;
     let codec_ctx_hsi = cond_table.add_hidden_state(ValueType::USize);
 
     // SAFETY: specialization closure only returns an unchecked function's
     //         pointer if it can prove the inputs are always in-bounds, and has
     //         correctly mapped parameters
-    unsafe { cond_table.add_binding("pt".into(), Binding::Function {
+    unsafe { cond_table.add_binding("out".into(), Binding::Function {
         ret_type: ValueType::U8,
         params: [
             // param 0: usize
@@ -170,7 +194,7 @@ fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, m
         ].into(),
         fn_spec: Box::new(move |hints| {
             let args = [
-                // codec_ctx: &T::DecryptionContext
+                // codec_ctx: &W::CodecContext<'_, DECRYPT>
                 FnSpecCallArg::from_hidden_state(codec_ctx_hsi),
                 // m: usize (param 0)
                 FnSpecCallArg::MappedArgument { param_idx: 0 },
@@ -181,12 +205,12 @@ fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, m
             if let [Some(IRConst::Uint { inner: m }), Some(IRConst::Uint { inner: u })] = *hints.consts {
                 let m = m as usize;
                 if m < messages.get_message_count() && (u as usize) < messages.get_unit_count(m) {
-                    Ok(FnSpecChoice::Call { fn_ptr: eval_pt_unchecked::<K, T> as FnPointer, args })
+                    Ok(FnSpecChoice::Call { fn_ptr: eval_out_unchecked::<DECRYPT, K, W> as FnPointer, args })
                 } else {
-                    Err("pt() call in expression is always out of bounds".into())
+                    Err("out() call in expression is always out of bounds".into())
                 }
             } else {
-                Ok(FnSpecChoice::Call { fn_ptr: eval_pt::<K, T> as FnPointer, args })
+                Ok(FnSpecChoice::Call { fn_ptr: eval_out::<DECRYPT, K, W> as FnPointer, args })
             }
         }),
     })? };
@@ -194,7 +218,7 @@ fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, m
     // SAFETY: specialization closure only returns an unchecked function's
     //         pointer if it can prove the inputs are always in-bounds, and has
     //         correctly mapped parameters
-    unsafe { cond_table.add_binding("pt_freq_dist_error".into(), Binding::Function {
+    unsafe { cond_table.add_binding("out_freq_dist_error".into(), Binding::Function {
         ret_type: ValueType::F64,
         params: [
             // param 0: usize
@@ -205,27 +229,27 @@ fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, m
                 let l = l as usize;
                 if l < languages.len() {
                     Ok(FnSpecChoice::Call {
-                        fn_ptr: eval_pt_freq_dist_error_specific::<K, T> as FnPointer,
+                        fn_ptr: eval_out_freq_dist_error_specific::<DECRYPT, K, W> as FnPointer,
                         args: [
-                            // codec_ctx: &T::DecryptionContext
+                            // codec_ctx: &W::CodecContext<'_, DECRYPT>
                             FnSpecCallArg::from_hidden_state(codec_ctx_hsi),
-                            // pt_freq_dist: &OnceCell<UnitFrequency>
-                            FnSpecCallArg::from(pt_freq_dist_ptr.addr()),
+                            // out_freq_dist: &OnceCell<UnitFrequency>
+                            FnSpecCallArg::from(out_freq_dist_ptr.addr()),
                             // language: &UnitFrequency
                             FnSpecCallArg::from((&languages[l] as *const UnitFrequency).addr()),
                         ].into(),
                     })
                 } else {
-                    Err("pt_freq_dist_error() call in expression is always out of bounds".into())
+                    Err("out_freq_dist_error() call in expression is always out of bounds".into())
                 }
             } else {
                 Ok(FnSpecChoice::Call {
-                    fn_ptr: eval_pt_freq_dist_error::<K, T> as FnPointer,
+                    fn_ptr: eval_out_freq_dist_error::<DECRYPT, K, W> as FnPointer,
                     args: [
-                        // codec_ctx: &T::DecryptionContext
+                        // codec_ctx: &W::CodecContext<'_, DECRYPT>
                         FnSpecCallArg::from_hidden_state(codec_ctx_hsi),
-                        // pt_freq_dist: &OnceCell<UnitFrequency>
-                        FnSpecCallArg::from(pt_freq_dist_ptr.addr()),
+                        // out_freq_dist: &OnceCell<UnitFrequency>
+                        FnSpecCallArg::from(out_freq_dist_ptr.addr()),
                         // languages: &Vec<UnitFrequency>
                         FnSpecCallArg::from(languages_ptr.addr()),
                         // l: usize (param 0)
@@ -244,15 +268,15 @@ fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, m
     // clone messages to keep them closer in memory with other working values
     let messages = &(*messages).clone();
 
-    worker_ctx.permute_keys_interruptible(&mut |key| {
+    worker_ctx.permute_keys_interruptible(|key| {
         // TODO clearing the cache results in a 5% slowdown. hot-eval should
         //      support pure functions, so that it reuses outputs when possible,
         //      otherwise we have to unnecessarily clear a cache and manage our
         //      own lazy cell, even when there's only a single call in the
         //      expression
-        pt_freq_dist.take(); // clear cache
+        out_freq_dist.take(); // clear cache
 
-        let codec_ctx = T::DecryptionContext::new(messages, key);
+        let codec_ctx = W::CodecContext::<'_, DECRYPT>::new(messages, key);
         // SAFETY: &codec_ctx is only used during expression evaluation, it's
         //         replaced before every expression evaluation, and codec_ctx
         //         outlives the call
@@ -264,7 +288,7 @@ fn search_task<'str, K: CipherKey, T: CipherWorkerContext<K>>(_worker_id: u32, m
         if unsafe { jit_fn.call() } {
             tx.send(TaskPacket::Match { net_key: key.encode_to_buffer() }).unwrap();
         }
-    }, &mut |_codec_ctx, keys| {
+    }, |keys| {
         tx.send(TaskPacket::Progress { keys }).unwrap();
         true
     });
@@ -294,6 +318,7 @@ fn main() { main_error_wrap!({
         None => None,
     };
 
+    let decrypt = !args.encrypt;
     let worker_total = if args.sequential {
         1u32
     } else {
@@ -315,7 +340,7 @@ fn main() { main_error_wrap!({
             worker_ctxs.push(worker_ctx);
         }
 
-        preamble(&messages_render_map, &alphabet, worker_total, &keys_total);
+        preamble(&messages_render_map, &alphabet, worker_total, &keys_total, decrypt);
 
         let start_time = Instant::now();
 
@@ -328,7 +353,13 @@ fn main() { main_error_wrap!({
             let tx = tx.clone();
 
             scope.spawn(move || {
-                match search_task(worker_id_clone, messages, worker_ctx, cond_src, languages, &tx) {
+                let task_res = if decrypt {
+                    search_task::<true, _, _>(worker_id_clone, messages, worker_ctx, cond_src, languages, &tx)
+                } else {
+                    search_task::<false, _, _>(worker_id_clone, messages, worker_ctx, cond_src, languages, &tx)
+                };
+
+                match task_res {
                     Ok(_) => tx.send(TaskPacket::Finished { worker_id }).unwrap(),
                     Err(err) => tx.send(TaskPacket::Error { message: err.to_string().into_boxed_str() }).unwrap(),
                 }

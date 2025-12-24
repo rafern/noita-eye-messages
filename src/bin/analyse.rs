@@ -28,7 +28,7 @@ fn main() { main_error_wrap!({
     println!();
 
     let unit_totals = UnitTotals::from_messages(messages_render_map.get_messages());
-    let freq = UnitFrequency::from_unit_totals_with_name("Ciphertext", &unit_totals);
+    let freq = UnitFrequency::from_unit_totals_with_name("Input", &unit_totals);
 
     for other in &freqs {
         println!("Frequency distribution error for {} and {}: {}", freq.name, other.name, freq.get_error(other));

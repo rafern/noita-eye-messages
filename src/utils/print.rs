@@ -155,15 +155,15 @@ pub fn print_message(msg: &Message, render_message: &RenderMessage, alphabet: &A
         }
 
         match render_group {
-            MessageRenderGroup::Plaintext { grapheme } => {
+            MessageRenderGroup::NonUnitText { grapheme } => {
                 print!("{}", grapheme.bright_green());
                 left -= 1;
             },
-            MessageRenderGroup::HexUnit { unit } => {
-                print!("{}", format_hex_char(*unit).yellow());
+            MessageRenderGroup::NonUnitByte { byte } => {
+                print!("{}", format_hex_char(*byte).yellow());
                 left -= 1;
             },
-            MessageRenderGroup::CiphertextRange { from, to } => {
+            MessageRenderGroup::UnitIndexRange { from, to } => {
                 let from = *from;
 
                 if config.multiview {

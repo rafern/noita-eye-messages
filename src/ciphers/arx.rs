@@ -102,6 +102,10 @@ impl CipherKey for ARXKey {
 
     fn from_buffer(buffer: &Box<[u8]>) -> Result<Self, Box<dyn Error>> {
         let enc_key = EncodedARXKey::decode(buffer.iter().as_slice())?;
+        if enc_key.rounds.len() > MAX_ROUNDS {
+            return Err("Max round count exceeded".into());
+        }
+
         let mut key = ARXKey::default();
         for enc_round in enc_key.rounds {
             key.rounds.push(ARXRound {
@@ -115,14 +119,14 @@ impl CipherKey for ARXKey {
     }
 }
 
-pub struct ARXDecryptContext<'codec> {
+pub struct ARXCodecContext<'codec, const DECRYPT: bool> {
     key: &'codec ARXKey,
     input_messages: &'codec InterleavedMessageData,
 }
 
-impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXDecryptContext<'codec> {
+impl<'codec, const DECRYPT: bool> CipherCodecContext<'codec, DECRYPT, ARXKey> for ARXCodecContext<'codec, DECRYPT> {
     fn new(input_messages: &'codec InterleavedMessageData, key: &'codec ARXKey) -> Self {
-        ARXDecryptContext { input_messages, key }
+        ARXCodecContext { input_messages, key }
     }
 
     fn get_input_messages(&self) -> &InterleavedMessageData {
@@ -133,34 +137,14 @@ impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXDecryptContext<'codec> {
         // SAFETY: bounds must be verified by caller
         let mut byte = unsafe { *self.input_messages.get_unchecked(message_index, unit_index) };
 
-        for round in self.key.rounds.iter().rev() {
-            byte = (byte ^ round.xor).rotate_left(round.rot as u32).wrapping_sub(round.add);
-        }
-
-        byte
-    }
-}
-
-pub struct ARXEncryptContext<'codec> {
-    key: &'codec ARXKey,
-    input_messages: &'codec InterleavedMessageData,
-}
-
-impl<'codec> CipherCodecContext<'codec, ARXKey> for ARXEncryptContext<'codec> {
-    fn new(input_messages: &'codec InterleavedMessageData, key: &'codec ARXKey) -> Self {
-        ARXEncryptContext { input_messages, key }
-    }
-
-    fn get_input_messages(&self) -> &InterleavedMessageData {
-        self.input_messages
-    }
-
-    unsafe fn get_output_unchecked(&self, message_index: usize, unit_index: usize) -> u8 {
-        // SAFETY: bounds must be verified by caller
-        let mut byte = unsafe { *self.input_messages.get_unchecked(message_index, unit_index) };
-
-        for round in self.key.rounds.iter() {
-            byte = byte.wrapping_add(round.add).rotate_right(round.rot as u32) ^ round.xor;
+        if const { DECRYPT } {
+            for round in self.key.rounds.iter().rev() {
+                byte = (byte ^ round.xor).rotate_left(round.rot as u32).wrapping_sub(round.add);
+            }
+        } else {
+            for round in self.key.rounds.iter() {
+                byte = byte.wrapping_add(round.add).rotate_right(round.rot as u32) ^ round.xor;
+            }
         }
 
         byte
@@ -174,7 +158,7 @@ pub struct ARXWorkerContext {
 }
 
 impl ARXWorkerContext {
-    unsafe fn permute_additional_round<KC: FnMut(&ARXKey), CC: FnMut(&ARXKey, u32) -> bool>(&self, r: usize, r_max: usize, key: &mut ARXKey, key_callback: &mut KC, chunk_callback: &mut CC) -> bool {
+    unsafe fn permute_additional_round<KC: FnMut(&ARXKey), CC: FnMut(u32) -> bool>(&self, r: usize, r_max: usize, key: &mut ARXKey, key_callback: &mut KC, chunk_callback: &mut CC) -> bool {
         // TODO maybe do macro for this entire pattern, including the part in
         //      the other method?
         if r == r_max {
@@ -185,7 +169,7 @@ impl ARXWorkerContext {
                 key_callback(key)
             });
 
-            chunk_callback(key, KEYS_PER_ROUND)
+            chunk_callback(KEYS_PER_ROUND)
         } else {
             // middle round, recurse
             // SAFETY: the caller must guarantee that r_max < key.rounds.len(),
@@ -205,8 +189,7 @@ impl ARXWorkerContext {
 }
 
 impl CipherWorkerContext<ARXKey> for ARXWorkerContext {
-    type DecryptionContext<'codec> = ARXDecryptContext<'codec>;
-    type EncryptionContext<'codec> = ARXEncryptContext<'codec>;
+    type CodecContext<'codec, const DECRYPT: bool> = ARXCodecContext<'codec, DECRYPT>;
 
     fn get_total_keys(&self) -> Integer {
         if self.round_count == 0 { return Integer::new(); }
@@ -215,7 +198,7 @@ impl CipherWorkerContext<ARXKey> for ARXWorkerContext {
         total
     }
 
-    fn permute_keys_interruptible<KC: FnMut(&ARXKey), CC: FnMut(&ARXKey, u32) -> bool>(&self, key_callback: &mut KC, chunk_callback: &mut CC) {
+    fn permute_keys_interruptible<KC: FnMut(&ARXKey), CC: FnMut(u32) -> bool>(&self, mut key_callback: KC, mut chunk_callback: CC) {
         let round_count: usize = self.round_count;
         if round_count == 0 { return }
 
@@ -224,16 +207,16 @@ impl CipherWorkerContext<ARXKey> for ARXWorkerContext {
 
         if round_count == 1 {
             permute_round!(key.rounds[0], self.a_min, self.a_max, {
-                key_callback(&mut key);
+                key_callback(&key);
             });
 
-            chunk_callback(&mut key, (self.a_max as u32 - self.a_min as u32 + 1) * 256 * 8);
+            chunk_callback((self.a_max as u32 - self.a_min as u32 + 1) * 256 * 8);
         } else {
             permute_round!(key.rounds[0], self.a_min, self.a_max, {
                 // SAFETY: round_count must be at least 2 to reach this block,
                 //         so 1 is guaranteed to be <= r_max, as r_max is
                 //         round_count - 1, which is 2 - 1 = 1 at minimum
-                if !unsafe { self.permute_additional_round(1, round_count - 1, &mut key, key_callback, chunk_callback) } { return }
+                if !unsafe { self.permute_additional_round(1, round_count - 1, &mut key, &mut key_callback, &mut chunk_callback) } { return }
             });
         }
     }

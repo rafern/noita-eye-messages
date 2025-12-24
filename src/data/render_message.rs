@@ -1,9 +1,9 @@
 use super::message::MessageList;
 
 pub enum MessageRenderGroup {
-    Plaintext { grapheme: Box<str> },
-    HexUnit { unit: u8 },
-    CiphertextRange { from: usize, to: usize },
+    NonUnitText { grapheme: Box<str> },
+    NonUnitByte { byte: u8 },
+    UnitIndexRange { from: usize, to: usize },
 }
 
 pub struct RenderMessage {
@@ -16,7 +16,7 @@ impl RenderMessage {
         let mut msg_len = 0usize;
         for group in &render_groups {
             msg_len += match group {
-                MessageRenderGroup::CiphertextRange { from, to } => to - from,
+                MessageRenderGroup::UnitIndexRange { from, to } => to - from,
                 _ => 1,
             }
         }
@@ -72,27 +72,27 @@ impl RenderMessageBuilder {
 
     fn flush(&mut self) {
         if let Some((from, to)) = self.next_unit_range {
-            self.render_groups.push(MessageRenderGroup::CiphertextRange { from, to });
+            self.render_groups.push(MessageRenderGroup::UnitIndexRange { from, to });
             self.next_unit_range = None;
         }
     }
 
-    pub fn push_hex(&mut self, unit: u8) {
+    pub fn push_non_unit_byte(&mut self, byte: u8) {
         self.flush();
-        self.render_groups.push(MessageRenderGroup::HexUnit { unit });
+        self.render_groups.push(MessageRenderGroup::NonUnitByte { byte });
     }
 
-    pub fn push_plaintext(&mut self, grapheme: Box<str>) {
+    pub fn push_non_unit(&mut self, grapheme: Box<str>) {
         if grapheme.len() == 1 && grapheme.is_ascii() {
             let ascii = grapheme.as_bytes()[0];
             if ascii <= 0x1f || ascii == 0x7f {
-                self.push_hex(ascii);
+                self.push_non_unit_byte(ascii);
                 return;
             }
         }
 
         self.flush();
-        self.render_groups.push(MessageRenderGroup::Plaintext { grapheme });
+        self.render_groups.push(MessageRenderGroup::NonUnitText { grapheme });
     }
 
     pub fn push_unit(&mut self, unit_idx: usize) {
