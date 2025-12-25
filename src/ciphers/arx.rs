@@ -138,13 +138,13 @@ impl<'codec, const DECRYPT: bool> CipherCodecContext<'codec, DECRYPT, ARXKey> fo
         let mut byte = unsafe { *self.input_messages.get_unchecked(message_index, unit_index) };
 
         if const { DECRYPT } {
-            for round in self.key.rounds.iter().rev() {
-                byte = (byte ^ round.xor).rotate_left(round.rot as u32).wrapping_sub(round.add);
-            }
-        } else {
-            for round in self.key.rounds.iter() {
+            self.key.rounds.for_each(|round| {
                 byte = byte.wrapping_add(round.add).rotate_right(round.rot as u32) ^ round.xor;
-            }
+            });
+        } else {
+            self.key.rounds.for_each_rev(|round| {
+                byte = (byte ^ round.xor).rotate_left(round.rot as u32).wrapping_sub(round.add);
+            });
         }
 
         byte

@@ -68,6 +68,32 @@ impl<T, const MAX_LEN: usize> StackVec<T, MAX_LEN> {
 
         self.len = new_len;
     }
+
+    pub fn for_each<F>(&self, mut f: F)
+    where F: FnMut(&T)
+    {
+        let i_max = self.len() - 1;
+        let mut i = 0;
+        loop {
+            // SAFETY: i is iterated from 0..self.len()-1, hence always valid
+            f(unsafe { self.get_unchecked(i) });
+            if i == i_max { break; }
+            i += 1;
+        }
+    }
+
+    pub fn for_each_rev<F>(&self, mut f: F)
+    where F: FnMut(&T)
+    {
+        let mut i = self.len() - 1;
+        loop {
+            // SAFETY: i is iterated from 0..self.len()-1 (reversed), hence
+            //         always valid
+            f(unsafe { self.get_unchecked(i) });
+            if i == 0 { break; }
+            i -= 1;
+        }
+    }
 }
 
 impl<T, const MAX_LEN: usize> Default for StackVec<T, MAX_LEN> {
