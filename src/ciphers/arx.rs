@@ -133,6 +133,7 @@ impl<'codec, const DECRYPT: bool> CipherCodecContext<'codec, DECRYPT, ARXKey> fo
         self.input_messages
     }
 
+    #[inline(always)]
     unsafe fn get_output_unchecked(&self, message_index: usize, unit_index: usize) -> u8 {
         // SAFETY: bounds must be verified by caller
         let mut byte = unsafe { *self.input_messages.get_unchecked(message_index, unit_index) };
