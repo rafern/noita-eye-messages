@@ -33,7 +33,7 @@ pub trait CipherKey: Sized + ToString {
 
 // FIXME: the DECRYPT const generic is a bad solution. ideally this trait would
 //        not know what it's used for, and the decrypt/encrypt concrete types
-//        would be set via an associated type of the CipherWorkerContext, but
+//        would be set via an associated type of the CipherWorkletContext, but
 //        this is complicated heavily by the fact that CipherCodecContext has a
 //        lifetime, and i can't figure out how to pass it to a closure
 /// NOTE: use interior mutability if you need to cache results. For example, a
@@ -77,7 +77,7 @@ pub trait CipherCodecContext<'codec, const DECRYPT: bool, Key: CipherKey> {
     }
 }
 
-pub trait CipherWorkerContext<Key: CipherKey>: Send {
+pub trait CipherWorkletContext<Key: CipherKey>: Send {
     type CodecContext<'codec, const DECRYPT: bool>: CipherCodecContext<'codec, DECRYPT, Key>;
 
     fn get_total_keys(&self) -> Integer;
@@ -100,16 +100,16 @@ pub trait CipherWorkerContext<Key: CipherKey>: Send {
  */
 pub trait Cipher {
     type Key: CipherKey;
-    type Context: CipherWorkerContext<Self::Key>;
+    type Context: CipherWorkletContext<Self::Key>;
 
     fn get_max_parallelism(&self) -> u32;
-    fn create_worker_context_parallel(&self, worker_id: u32, worker_total: u32) -> Self::Context;
+    fn create_worklet_context_parallel(&self, worklet_id: u32, worklet_total: u32) -> Self::Context;
 
     fn net_key_to_boxed_str(&self, net_key: &Box<[u8]>) -> Result<Box<str>, Box<dyn Error>> {
         Ok(Self::Key::from_buffer(net_key)?.to_string().into_boxed_str())
     }
 
-    fn create_worker_context(&self) -> Self::Context {
-        self.create_worker_context_parallel(0, 1)
+    fn create_worklet_context(&self) -> Self::Context {
+        self.create_worklet_context_parallel(0, 1)
     }
 }

@@ -15,7 +15,7 @@ use noita_eye_messages::utils::run::UnitResult;
 use prost::Message;
 use clap::Parser;
 use noita_eye_messages::analysis::unit_freq::UnitFrequency;
-use noita_eye_messages::ciphers::base::{Cipher, CipherCodecContext, CipherKey, CipherWorkerContext};
+use noita_eye_messages::ciphers::base::{Cipher, CipherCodecContext, CipherKey, CipherWorkletContext};
 use noita_eye_messages::ciphers::deserialise_cipher;
 use noita_eye_messages::data::key_dump::KeyDumpMeta;
 use rug::{Integer, Rational};
@@ -51,7 +51,8 @@ struct Args {
     /// Disable parallelism (search messages using only the main thread). Equivalent to setting max parallelism to 1, but takes priority over max parallelism
     #[arg(short, long)]
     sequential: bool,
-    /// Maximum number of workers (including main thread). Using all available cores has diminishing returns, so tweaking this value is recommended
+    // TODO replace this with a more general solution later, since there will be multiple workers, in separate machines
+    /// Maximum number of local worklets. Using all available cores has diminishing returns, so tweaking this value is recommended
     #[arg(short, long)]
     max_parallelism: Option<NonZeroU32>,
     /// Path to CSV file containing an alphabet with letter frequency distribution. Used to register languages for doing analysis. Refer to a language by its index (0-based) in the order specified in the terminal
@@ -67,7 +68,7 @@ struct Args {
 
 enum TaskPacket {
     Finished {
-        worker_id: u32,
+        worklet_id: u32,
     },
     Progress {
         keys: u32,
@@ -106,8 +107,8 @@ const RECV_TIMEOUT: Duration = Duration::from_secs(1);
 // TODO bin to decrypt with individual key
 // TODO bin to refine a search via key dump files
 
-fn preamble(messages_render_map: &MessageRenderMap, alphabet: &Alphabet, worker_total: u32, keys_total: &Integer, decrypt: bool) {
-    println!("Searching {} keys with {} workers", format_big_uint(keys_total), worker_total);
+fn preamble(messages_render_map: &MessageRenderMap, alphabet: &Alphabet, worklet_total: u32, keys_total: &Integer, decrypt: bool) {
+    println!("Searching {} keys with {} worklets", format_big_uint(keys_total), worklet_total);
     let title = if decrypt { "Ciphertexts" } else { "Plaintexts" };
     print_messages(title, messages_render_map, alphabet, &MessagesPrintConfig::default());
     println!();
@@ -145,7 +146,7 @@ fn eval_in_freq_dist_error(in_freq_dist_errors: &Box<[f64]>, l: usize) -> f64 {
 fn eval_out<const DECRYPT: bool, K, W>(codec_ctx: &W::CodecContext<'_, DECRYPT>, m: usize, u: usize) -> u8
 where
     K: CipherKey,
-    W: CipherWorkerContext<K>,
+    W: CipherWorkletContext<K>,
 {
     codec_ctx.get_output(m, u)
 }
@@ -153,7 +154,7 @@ where
 unsafe fn eval_out_unchecked<const DECRYPT: bool, K, W>(codec_ctx: &W::CodecContext<'_, DECRYPT>, m: usize, u: usize) -> u8
 where
     K: CipherKey,
-    W: CipherWorkerContext<K>,
+    W: CipherWorkletContext<K>,
 {
     // SAFETY: caller must verify bounds
     unsafe { codec_ctx.get_output_unchecked(m, u) }
@@ -162,7 +163,7 @@ where
 fn eval_out_freq_dist_error_specific<const DECRYPT: bool, K, W>(codec_ctx: &W::CodecContext<'_, DECRYPT>, out_freq_dist: &OnceCell<UnitFrequency>, language: &UnitFrequency) -> f64
 where
     K: CipherKey,
-    W: CipherWorkerContext<K>,
+    W: CipherWorkletContext<K>,
 {
     language.get_error(out_freq_dist.get_or_init(|| {
         UnitFrequency::from_message_data_list(&codec_ctx.get_output_messages())
@@ -172,15 +173,15 @@ where
 fn eval_out_freq_dist_error<const DECRYPT: bool, K, W>(codec_ctx: &W::CodecContext<'_, DECRYPT>, out_freq_dist: &OnceCell<UnitFrequency>, languages: &Vec<UnitFrequency>, l: usize) -> f64
 where
     K: CipherKey,
-    W: CipherWorkerContext<K>,
+    W: CipherWorkletContext<K>,
 {
     eval_out_freq_dist_error_specific::<DECRYPT, K, W>(codec_ctx, out_freq_dist, &languages[l])
 }
 
-fn search_task<'inputs, 'src, const DECRYPT: bool, K, W>(_worker_id: u32, messages: &'inputs InterleavedMessageData, worker_ctx: W, cond_src: &'src str, languages: &'inputs Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'src>>
+fn search_task<'inputs, 'src, const DECRYPT: bool, K, W>(_worklet_id: u32, messages: &'inputs InterleavedMessageData, worklet_ctx: W, cond_src: &'src str, languages: &'inputs Vec<UnitFrequency>, tx: &SyncSender<TaskPacket>) -> Result<(), Box<dyn Error + 'src>>
 where
     K: CipherKey,
-    W: CipherWorkerContext<K>,
+    W: CipherWorkletContext<K>,
 {
     let mut jit_ctx = JITContext::new();
     let mut comp_ctx = jit_ctx.make_compilation_context()?;
@@ -346,7 +347,7 @@ where
     // clone messages to keep them closer in memory with other working values
     let messages = &(*messages).clone();
 
-    worker_ctx.permute_keys_interruptible(|key| {
+    worklet_ctx.permute_keys_interruptible(|key| {
         // TODO clearing the cache results in a 5% slowdown. hot-eval should
         //      support pure functions, so that it reuses outputs when possible,
         //      otherwise we have to unnecessarily clear a cache and manage our
@@ -397,7 +398,7 @@ fn main() { main_error_wrap!({
     };
 
     let decrypt = !args.encrypt;
-    let worker_total = if args.sequential {
+    let worklet_total = if args.sequential {
         1u32
     } else {
         let mut max_parallelism: u32 = args.max_parallelism.unwrap_or(NonZeroU32::new(u32::MAX).unwrap()).into();
@@ -410,21 +411,21 @@ fn main() { main_error_wrap!({
 
     std::thread::scope(|scope| -> UnitResult {
         let mut keys_total = Integer::new();
-        let mut worker_ctxs = Vec::new();
+        let mut worklet_ctxs = Vec::new();
 
-        for worker_id in 0..worker_total {
-            let worker_ctx = cipher.create_worker_context_parallel(worker_id, worker_total);
-            keys_total += worker_ctx.get_total_keys();
-            worker_ctxs.push(worker_ctx);
+        for worklet_id in 0..worklet_total {
+            let worklet_ctx = cipher.create_worklet_context_parallel(worklet_id, worklet_total);
+            keys_total += worklet_ctx.get_total_keys();
+            worklet_ctxs.push(worklet_ctx);
         }
 
-        preamble(&messages_render_map, &alphabet, worker_total, &keys_total, decrypt);
+        preamble(&messages_render_map, &alphabet, worklet_total, &keys_total, decrypt);
 
         let start_time = Instant::now();
 
-        let mut worker_id = 0;
-        for worker_ctx in worker_ctxs {
-            let worker_id_clone = worker_id.clone();
+        let mut worklet_id = 0;
+        for worklet_ctx in worklet_ctxs {
+            let worklet_id_clone = worklet_id.clone();
             let messages = &messages.data;
             let cond_src = &args.condition;
             let languages = &languages;
@@ -432,18 +433,18 @@ fn main() { main_error_wrap!({
 
             scope.spawn(move || {
                 let task_res = if decrypt {
-                    search_task::<true, _, _>(worker_id_clone, messages, worker_ctx, cond_src, languages, &tx)
+                    search_task::<true, _, _>(worklet_id_clone, messages, worklet_ctx, cond_src, languages, &tx)
                 } else {
-                    search_task::<false, _, _>(worker_id_clone, messages, worker_ctx, cond_src, languages, &tx)
+                    search_task::<false, _, _>(worklet_id_clone, messages, worklet_ctx, cond_src, languages, &tx)
                 };
 
                 match task_res {
-                    Ok(_) => tx.send(TaskPacket::Finished { worker_id }).unwrap(),
+                    Ok(_) => tx.send(TaskPacket::Finished { worklet_id }).unwrap(),
                     Err(err) => tx.send(TaskPacket::Error { message: err.to_string().into_boxed_str() }).unwrap(),
                 }
             });
 
-            worker_id += 1;
+            worklet_id += 1;
         }
 
         drop(tx);
@@ -451,15 +452,15 @@ fn main() { main_error_wrap!({
         let mut keys_checked = Integer::new();
         let mut keys_checked_since_last_print = Integer::new();
         let mut last_print = start_time.clone();
-        let mut workers_waiting = worker_total;
+        let mut worklets_waiting = worklet_total;
 
-        while workers_waiting > 0 {
+        while worklets_waiting > 0 {
             match rx.recv_timeout(RECV_TIMEOUT) {
                 Ok(packet) => {
                     match packet {
-                        TaskPacket::Finished { worker_id } => {
-                            workers_waiting -= 1;
-                            println!("Worker {worker_id} finished task");
+                        TaskPacket::Finished { worklet_id } => {
+                            worklets_waiting -= 1;
+                            println!("Worklet {worklet_id} finished task");
                         },
                         TaskPacket::Progress { keys } => {
                             keys_checked_since_last_print += keys;
@@ -475,9 +476,9 @@ fn main() { main_error_wrap!({
                             }
                         },
                         TaskPacket::Error { message } => {
-                            workers_waiting -= 1;
-                            println!("Worker {worker_id} errored: {message}");
-                            // TODO kill other workers?
+                            worklets_waiting -= 1;
+                            println!("Worklet {worklet_id} errored: {message}");
+                            // TODO kill other worklets?
                         },
                     }
                 },
@@ -485,7 +486,7 @@ fn main() { main_error_wrap!({
                     match err {
                         RecvTimeoutError::Timeout => { /* do nothing */ },
                         RecvTimeoutError::Disconnected => {
-                            println!("Worker channel disconnected (thread died?)");
+                            println!("Worklet channel disconnected (thread died?)");
                             return Err(err)?;
                         },
                     }

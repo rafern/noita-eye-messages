@@ -3,7 +3,7 @@ use std::error::Error;
 use prost::Message;
 use rug::{Integer, ops::Pow};
 
-use crate::{ciphers::base::{Cipher, CipherCodecContext, CipherWorkerContext, StandardCipherError}, data::message::InterleavedMessageData, utils::{run::AnyErrorResult, stackvec::StackVec, threading::get_worker_slice}};
+use crate::{ciphers::base::{Cipher, CipherCodecContext, CipherWorkletContext, StandardCipherError}, data::message::InterleavedMessageData, utils::{run::AnyErrorResult, stackvec::StackVec, threading::get_worklet_slice}};
 
 use super::base::CipherKey;
 
@@ -152,13 +152,13 @@ impl<'codec, const DECRYPT: bool> CipherCodecContext<'codec, DECRYPT, ARXKey> fo
     }
 }
 
-pub struct ARXWorkerContext {
+pub struct ARXWorkletContext {
     round_count: usize,
     a_min: u8,
     a_max: u8,
 }
 
-impl ARXWorkerContext {
+impl ARXWorkletContext {
     unsafe fn permute_additional_round<KC: FnMut(&ARXKey), CC: FnMut(u32) -> bool>(&self, r: usize, r_max: usize, key: &mut ARXKey, key_callback: &mut KC, chunk_callback: &mut CC) -> bool {
         // TODO maybe do macro for this entire pattern, including the part in
         //      the other method?
@@ -189,7 +189,7 @@ impl ARXWorkerContext {
     }
 }
 
-impl CipherWorkerContext<ARXKey> for ARXWorkerContext {
+impl CipherWorkletContext<ARXKey> for ARXWorkletContext {
     type CodecContext<'codec, const DECRYPT: bool> = ARXCodecContext<'codec, DECRYPT>;
 
     fn get_total_keys(&self) -> Integer {
@@ -246,14 +246,14 @@ impl ARXCipher {
 
 impl Cipher for ARXCipher {
     type Key = ARXKey;
-    type Context = ARXWorkerContext;
+    type Context = ARXWorkletContext;
 
     fn get_max_parallelism(&self) -> u32 { 256 }
 
-    fn create_worker_context_parallel(&self, worker_id: u32, worker_total: u32) -> <ARXCipher as Cipher>::Context {
-        let (a_min, a_max) = get_worker_slice::<u8>(255, worker_id, worker_total);
+    fn create_worklet_context_parallel(&self, worklet_id: u32, worklet_total: u32) -> <ARXCipher as Cipher>::Context {
+        let (a_min, a_max) = get_worklet_slice::<u8>(255, worklet_id, worklet_total);
 
-        ARXWorkerContext {
+        ARXWorkletContext {
             round_count: self.round_count,
             a_min,
             a_max,
